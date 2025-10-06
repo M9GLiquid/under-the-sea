@@ -156,35 +156,23 @@ python tools/grid_inspector.py output/GPS-Real_grid_8x6.png
 
 ---
 
-### Tool 6: Real-World Calibrator (`tools/real_world_calibrator.py`) - *Planned*
-**Purpose:** Establish pixel-to-centimeter conversion ratios for real-world measurements.
+### Tool 6: Real-World Calibrator (`tools/real_world_calibrator.py`)
+**Purpose:** Convert rectified grid pixels into real-world centimetres using Tool 5 corner data.
 
 **Usage:**
 ```bash
-python tools/real_world_calibrator.py output/GPS-Real_grid_8x6.png
+python tools/real_world_calibrator.py data/GPS-Real_corrected_rectified_oriented_grids.json
 ```
 
 **Process:**
-1. Load grid image and arena bounds
-2. Click two points to measure pixel distance
-3. Input real-world measurement in centimeters
-4. Calculate conversion ratios
-5. Save calibration data
-
-**Controls:**
-- Left click: Set measurement points (2 clicks = 1 measurement)
-- 'c': Clear current measurement
-- 's': Save calibration data
-- 'q': Quit
-
-**Features:**
-- Multiple measurements for improved accuracy
-- Statistical analysis (average, min/max, standard deviation)
-- Arena bounds constraint for measurements
-- Real-time ratio calculation
+1. Loads Tool 5 `*_grids.json` manifest and derives rectified arena corners
+2. Calculates pixel spans for each wall and both diagonals
+3. Guides you through four corner-to-corner wall measurements (TL→TR, TR→BR, BR→BL, BL→TL) in millimetres
+4. Computes cm↔px ratios, prints summary stats, and (optionally) opens the rectified image while streaming the Top-Left→cursor distance in millimetres to the terminal
+5. After inspection, prompts you to press `s` to write the calibration JSON (anything else cancels)
 
 **Outputs:**
-- `data/GPS-Real_calibration.json` - Pixel-to-cm conversion data
+- `data/GPS-Real_corrected_rectified_oriented_calibration.json` – Pixel↔cm conversion stats, user-supplied wall lengths, derived diagonals, and assumptions
 
 ---
 
@@ -207,8 +195,8 @@ python tools/grid_overlay.py output/GPS-Real_rectified_oriented.png
 # 5. Inspect grid cells
 python tools/grid_inspector.py output/GPS-Real_grid_8x6.png
 
-# 6. Calibrate real-world measurements (planned)
-python tools/real_world_calibrator.py output/GPS-Real_grid_8x6.png
+# 6. Calibrate real-world measurements
+python tools/real_world_calibrator.py data/GPS-Real_corrected_rectified_oriented_grids.json
 ```
 
 ### Automated Pipeline (Planned)
