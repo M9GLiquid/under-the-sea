@@ -3,7 +3,13 @@
 Arena rectification tool - warps detected arena corners into an orientation-aligned
 rectangle (not necessarily square) and estimates approximate orientation (yaw, pitch, roll).
 
-Usage: python tools/rectify_arena_square.py <corner_json_path>
+Usage:
+  python tools/rectify_arena_square.py <corners_json_or_corrected_image>
+
+Notes:
+- You can provide either the corners JSON from Tool 2 (e.g., data/GPS-Real_corrected_corners.json)
+  or the corrected image path (e.g., output/GPS-Real_corrected.png). If an image path is given,
+  this tool will automatically look for data/<base>_corners.json.
 
 This tool:
 1. Loads corner data JSON produced by the corner detector tool
@@ -286,7 +292,7 @@ def rectify_arena(corners_json_path: str, width_arg: int = 0, height_arg: int = 
 
 def main():
     parser = argparse.ArgumentParser(description="Rectify arena to a square and estimate orientation")
-    parser.add_argument("corner_json", help="Path to the corner JSON from the corner detector tool")
+    parser.add_argument("corners_or_image", help="Path to Tool 2 corners JSON OR the corrected image path")
     parser.add_argument("--width", type=int, default=0, help="Desired output width (oriented rectangle)")
     parser.add_argument("--height", type=int, default=0, help="Desired output height (oriented rectangle)")
     parser.add_argument("--size", type=int, default=0, help="Force square side length (overrides width/height)")
@@ -294,7 +300,21 @@ def main():
     args = parser.parse_args()
 
     try:
-        return rectify_arena(args.corner_json, args.width, args.height, args.size, args.margin)
+        # Accept either JSON path or image path and resolve corners JSON automatically
+        corners_path = args.corners_or_image
+        if not corners_path.lower().endswith(".json"):
+            # Treat as image path; derive data/<base>_corners.json
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+            base = os.path.splitext(os.path.basename(corners_path))[0]
+            guessed = os.path.join(project_root, "data", f"{base}_corners.json")
+            if os.path.exists(guessed):
+                corners_path = guessed
+            else:
+                print(f"Error: expected corners JSON not found: {os.path.relpath(guessed, project_root)}")
+                print("Run Tool 2 (detect_arena_corners.py) first, or pass the JSON path explicitly.")
+                return 1
+
+        return rectify_arena(corners_path, args.width, args.height, args.size, args.margin)
     except Exception as e:
         print(f"Error: {e}")
         return 1

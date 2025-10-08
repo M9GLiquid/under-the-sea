@@ -57,6 +57,10 @@ class FisheyeCorrector:
         self.view_center: Tuple[int, int] = (self.width // 2, self.height // 2)
         self.is_panning: bool = False
         self.last_mouse_pos: Tuple[int, int] = (0, 0)
+        self.pan_button: Optional[str] = None
+        self.cursor_pos: Tuple[int, int] = (self.width // 2, self.height // 2)
+        # Track cursor in base-image coordinates for drawing a stable crosshair
+        self.cursor_base_xy: Tuple[int, int] = (self.width // 2, self.height // 2)
         # Cached ROI from last render for fast screen->image mapping
         # (x0, y0, roi_w, roi_h, view_w, view_h)
         self.current_view_roi: Optional[Tuple[int, int, int, int, int, int]] = None
@@ -78,51 +82,106 @@ class FisheyeCorrector:
         
     def mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for point collection and navigation (zoom/pan)"""
-        # Middle mouse drag to pan
-        if event == cv2.EVENT_MBUTTONDOWN:
+        cursor_events = (
+            cv2.EVENT_MOUSEMOVE,
+            cv2.EVENT_LBUTTONDOWN,
+            cv2.EVENT_RBUTTONDOWN,
+            cv2.EVENT_MBUTTONDOWN,
+        )
+        wheel_event = getattr(cv2, 'EVENT_MOUSEWHEEL', None)
+        if wheel_event is not None:
+            cursor_events += (wheel_event,)
+        if event in cursor_events:
+            self.cursor_pos = (x, y)
+            bx, by = self._screen_to_base_xy(x, y)
+            if bx is not None and by is not None:
+                self.cursor_base_xy = (bx, by)
+            # Refresh view to move crosshair smoothly with the mouse
+            if event == cv2.EVENT_MOUSEMOVE:
+                self.update_display()
+
+        dbl_left = getattr(cv2, 'EVENT_LBUTTONDBLCLK', None)
+        dbl_right = getattr(cv2, 'EVENT_RBUTTONDBLCLK', None)
+        if dbl_left is not None and event == dbl_left:
+            self._zoom_at_screen_point(1, x, y)
+            self.update_display()
+            return
+        if dbl_right is not None and event == dbl_right:
+            self._zoom_at_screen_point(-1, x, y)
+            self.update_display()
+            return
+        if self._handle_pan(event, x, y, flags):
+            return
+        if self._handle_zoom(event, x, y, flags):
+            return
+        if self._handle_add_point(event, x, y):
+            return
+
+    def _handle_pan(self, event, x, y, flags=0):
+        """Handle middle mouse drag to pan."""
+        shift_flag = getattr(cv2, 'EVENT_FLAG_SHIFTKEY', 0)
+        ctrl_flag = getattr(cv2, 'EVENT_FLAG_CTRLKEY', 0)
+        alt_flag = getattr(cv2, 'EVENT_FLAG_ALTKEY', 0)
+        modifier_active = False
+        for flag in (shift_flag, ctrl_flag, alt_flag):
+            if flag and (flags & flag):
+                modifier_active = True
+                break
+
+        if event == cv2.EVENT_MBUTTONDOWN or event == cv2.EVENT_RBUTTONDOWN or (event == cv2.EVENT_LBUTTONDOWN and modifier_active):
             self.is_panning = True
+            if event == cv2.EVENT_MBUTTONDOWN:
+                self.pan_button = 'middle'
+            elif event == cv2.EVENT_RBUTTONDOWN:
+                self.pan_button = 'right'
+            else:
+                self.pan_button = 'left'
             self.last_mouse_pos = (x, y)
-        elif event == cv2.EVENT_MBUTTONUP:
+            return True
+        elif event in (cv2.EVENT_MBUTTONUP, cv2.EVENT_RBUTTONUP) or (event == cv2.EVENT_LBUTTONUP and self.pan_button == 'left'):
             self.is_panning = False
+            self.pan_button = None
+            return True
         elif event == cv2.EVENT_MOUSEMOVE and self.is_panning:
             dx = x - self.last_mouse_pos[0]
             dy = y - self.last_mouse_pos[1]
             self.last_mouse_pos = (x, y)
             self._pan_by_pixels(dx, dy)
             self.update_display()
-            return
-        
-        # Mouse wheel to zoom (centered at cursor)
+            return True
+        return False
+
+    def _handle_zoom(self, event, x, y, flags):
+        """Handle mouse wheel to zoom (centered at cursor)."""
         if event == getattr(cv2, 'EVENT_MOUSEWHEEL', -1):
-            # flags > 0 => wheel up (zoom in), flags < 0 => wheel down (zoom out)
             direction = 1 if flags > 0 else -1
             self._zoom_at_screen_point(direction, x, y)
             self.update_display()
-            return
-        
-        # Left click to add a point (only in original view)
+            return True
+        return False
+
+    def _handle_add_point(self, event, x, y):
+        """Handle left click to add a point (only in original view)."""
         if event == cv2.EVENT_LBUTTONDOWN:
             if self.show_corrected:
                 print("Switch to ORIGINAL view ('t') to add points")
-                return
+                return True
             if self.current_wall_idx < len(self.walls):
-                # Map screen coords -> base image coords using current viewport
                 bx, by = self._screen_to_base_xy(x, y)
                 if bx is None:
-                    return
-                # Convert base coords (may include margins) to original image coords
+                    return True
                 px, py = self._base_to_original_xy(bx, by)
                 if px is None:
-                    return
-                # Clamp to original image bounds
+                    return True
                 px = int(max(0, min(self.width - 1, px)))
                 py = int(max(0, min(self.height - 1, py)))
-                
                 self.walls[self.current_wall_idx].points.append((px, py))
                 wall_name = self.walls[self.current_wall_idx].wall_name
                 num_points = len(self.walls[self.current_wall_idx].points)
                 print(f"Added point ({px}, {py}) to {wall_name} wall [{num_points} points]")
                 self.update_display()
+                return True
+        return False
                 
     def undo_last_point(self):
         """Undo the last point added to current wall"""
@@ -139,86 +198,86 @@ class FisheyeCorrector:
                 
     def advance_to_next_wall(self):
         """Advance to next wall"""
-        if self.current_wall_idx < len(self.walls):
-            current_wall = self.walls[self.current_wall_idx]
-            wall_name = current_wall.wall_name
-            
-            if len(current_wall.points) >= 2:  # Even 2 points help
-                print(f"✓ {wall_name} wall complete! ({len(current_wall.points)} points collected)")
-                
-                # Move to next wall
-                if self.current_wall_idx < len(self.walls) - 1:
-                    self.current_wall_idx += 1
-                    next_wall = self.walls[self.current_wall_idx].wall_name
-                    
-                    if next_wall == "top":
-                        print(f"Now click points on the {next_wall} wall - THIS IS THE MOST IMPORTANT!")
-                        print("Click many points along the curved top edge for best results")
-                    else:
-                        print(f"Now click points on the {next_wall} wall (even small visible portions help)")
-                        print("Press 'n' when done, even with just a few points")
-                else:
-                    print(f"✓ All walls complete! Calculating fisheye correction...")
-                    self.auto_calculate_correction()
-            elif len(current_wall.points) >= 1:
-                print(f"Only {len(current_wall.points)} point(s) for {wall_name} wall - that's okay for fisheye!")
-                print("Even partial wall data helps. Moving to next wall...")
-                
-                # Move to next wall even with minimal points
-                if self.current_wall_idx < len(self.walls) - 1:
-                    self.current_wall_idx += 1
-                    next_wall = self.walls[self.current_wall_idx].wall_name
-                    print(f"Now click points on the {next_wall} wall")
-                else:
-                    print(f"✓ All walls processed! Calculating fisheye correction...")
-                    self.auto_calculate_correction()
+        if self.current_wall_idx >= len(self.walls):
+            return
+
+        current_wall = self.walls[self.current_wall_idx]
+        wall_name = current_wall.wall_name
+        points_count = len(current_wall.points)
+
+        if points_count >= 2:
+            self._handle_wall_complete(wall_name, points_count)
+        elif points_count >= 1:
+            self._handle_wall_partial(wall_name, points_count)
+        else:
+            self._handle_wall_empty(wall_name)
+
+    def _move_to_next_wall(self, message: Optional[str] = None):
+        if self.current_wall_idx < len(self.walls) - 1:
+            self.current_wall_idx += 1
+            next_wall = self.walls[self.current_wall_idx].wall_name
+            if next_wall == "top":
+                print(f"Now click points on the {next_wall} wall - THIS IS THE MOST IMPORTANT!")
+                print("Click many points along the curved top edge for best results")
             else:
-                print(f"No points for {wall_name} wall - that's okay, moving to next wall")
-                if self.current_wall_idx < len(self.walls) - 1:
-                    self.current_wall_idx += 1
-                    next_wall = self.walls[self.current_wall_idx].wall_name
-                    print(f"Now click points on the {next_wall} wall")
-                else:
-                    print(f"✓ All walls processed! Calculating fisheye correction...")
-                    self.auto_calculate_correction()
+                print(f"Now click points on the {next_wall} wall (even small visible portions help)")
+                print("Press 'n' when done, even with just a few points")
+            if message:
+                print(message)
+        else:
+            print("✓ All walls complete! Calculating fisheye correction...")
+            self.auto_calculate_correction()
+
+    def _handle_wall_complete(self, wall_name, points_count):
+        print(f"✓ {wall_name} wall complete! ({points_count} points collected)")
+        self._move_to_next_wall()
+
+    def _handle_wall_partial(self, wall_name, points_count):
+        print(f"Only {points_count} point(s) for {wall_name} wall - that's okay for fisheye!")
+        print("Even partial wall data helps. Moving to next wall...")
+        self._move_to_next_wall()
+
+    def _handle_wall_empty(self, wall_name):
+        print(f"No points for {wall_name} wall - that's okay, moving to next wall")
+        self._move_to_next_wall()
                     
     def update_display(self):
         """Update the display with current points and apply zoom/pan viewport"""
-        # Prepare base image for overlay
-        if self.show_corrected and self.corrected_image is not None:
-            base = self.corrected_image.copy()
-            # Note: We do not draw points on corrected image (no mapping available)
-        elif hasattr(self, 'original_with_margins'):
-            base = self.original_with_margins.copy()
-            # Draw points with margin offset
-            margin = self.fisheye_calibration.margin_pixels
-            for wall in self.walls:
-                if len(wall.points) > 0:
-                    # Draw points (radius 3) with margin offset
-                    for point in wall.points:
-                        offset_point = (point[0] + margin, point[1] + margin)
-                        cv2.circle(base, offset_point, 3, wall.color, -1)
-                    # Draw polyline if more than one point
-                    if len(wall.points) > 1:
-                        offset_points = [(p[0] + margin, p[1] + margin) for p in wall.points]
-                        pts = np.array(offset_points, np.int32)
-                        cv2.polylines(base, [pts], False, wall.color, 3)
-        else:
-            # Fallback to original image (before correction is applied)
-            base = self.original_image.copy()
-            # Draw all wall points and polylines
-            for wall in self.walls:
-                if len(wall.points) > 0:
-                    # Draw points (radius 3)
-                    for point in wall.points:
-                        cv2.circle(base, point, 3, wall.color, -1)
-                    # Draw polyline if more than one point
-                    if len(wall.points) > 1:
-                        pts = np.array(wall.points, np.int32)
-                        cv2.polylines(base, [pts], False, wall.color, 3)
+        base = self._prepare_base_image()
+        view = self._apply_viewport(base)
+        # Draw a subtle crosshair at the cursor for consistent pointer visuals
+        self._draw_crosshair(view)
+        self.display_image = view
 
-        # Apply viewport zoom/pan to final display image
-        self.display_image = self._apply_viewport(base)
+    def _prepare_base_image(self) -> np.ndarray:
+        """Return a copy of the image base with any overlays applied."""
+        if self.show_corrected and self.corrected_image is not None:
+            return self.corrected_image.copy()
+
+        if hasattr(self, 'original_with_margins'):
+            base = self.original_with_margins.copy()
+            margin = self.fisheye_calibration.margin_pixels if self.fisheye_calibration else 0
+        else:
+            base = self.original_image.copy()
+            margin = 0
+
+        self._draw_wall_points(base, margin)
+        return base
+
+    def _draw_wall_points(self, image: np.ndarray, margin: int) -> None:
+        """Draw collected wall points and connecting polylines."""
+        for wall in self.walls:
+            if not wall.points:
+                continue
+
+            offset_points = [(point[0] + margin, point[1] + margin) for point in wall.points]
+
+            for point in offset_points:
+                cv2.circle(image, point, 3, wall.color, -1)
+
+            if len(offset_points) > 1:
+                pts = np.array(offset_points, np.int32)
+                cv2.polylines(image, [pts], False, wall.color, 3)
 
     # -------------------- Viewport helpers --------------------
     def _apply_viewport(self, image: np.ndarray) -> np.ndarray:
@@ -240,6 +299,25 @@ class FisheyeCorrector:
         view = cv2.resize(roi, (w, h), interpolation=cv2.INTER_NEAREST)
         self.current_view_roi = (x0, y0, roi_w, roi_h, w, h)
         return view
+
+    def _draw_crosshair(self, view_image: np.ndarray) -> None:
+        """Draw a small crosshair at the current cursor position mapped into the view image."""
+        if self.current_view_roi is None or view_image is None:
+            return
+        x0, y0, roi_w, roi_h, view_w, view_h = self.current_view_roi
+        bx, by = self.cursor_base_xy
+        # Map base → view coordinates
+        vx = int(round((bx - x0) * float(view_w) / max(1.0, float(roi_w))))
+        vy = int(round((by - y0) * float(view_h) / max(1.0, float(roi_h))))
+        # Draw crosshair (clamped inside view)
+        h, w = view_image.shape[:2]
+        vx = max(0, min(w - 1, vx))
+        vy = max(0, min(h - 1, vy))
+        size = 10
+        color = (255, 255, 255)
+        thickness = 1
+        cv2.line(view_image, (max(0, vx - size), vy), (min(w - 1, vx + size), vy), color, thickness, cv2.LINE_AA)
+        cv2.line(view_image, (vx, max(0, vy - size)), (vx, min(h - 1, vy + size)), color, thickness, cv2.LINE_AA)
 
     def _clamp_view_center(self, w: int, h: int) -> None:
         """Clamp view center so the ROI stays inside image bounds."""
@@ -296,7 +374,7 @@ class FisheyeCorrector:
         """Pan the viewport by a delta in screen pixels, converted to image pixels."""
         if self.current_view_roi is None:
             return
-        x0, y0, roi_w, roi_h, view_w, view_h = self.current_view_roi
+        _, _, roi_w, roi_h, view_w, view_h = self.current_view_roi
         # Convert screen movement to base-image movement
         move_x = (dx_view * roi_w) / max(1, view_w)
         move_y = (dy_view * roi_h) / max(1, view_h)
@@ -304,6 +382,76 @@ class FisheyeCorrector:
         # Dragging the image should move content with the cursor (invert movement)
         self.view_center = (int(round(cx - move_x)), int(round(cy - move_y)))
         # Clamp will occur in next render
+
+    def _pan_by_image_units(self, dx_image: int, dy_image: int) -> None:
+        """Pan the viewport by a delta expressed directly in image pixels."""
+        if dx_image == 0 and dy_image == 0:
+            return
+        cx, cy = self.view_center
+        self.view_center = (int(round(cx + dx_image)), int(round(cy + dy_image)))
+        self.update_display()
+
+    @staticmethod
+    def _key_in(key: int, raw_key: int, *chars: str) -> bool:
+        """Return True if either key code matches any provided characters."""
+        for ch in chars:
+            code = ord(ch)
+            if key == code:
+                return True
+            if raw_key not in (-1, None) and (raw_key & 0xFF) == code:
+                return True
+        return False
+
+    def _handle_keyboard_pan(self, key: int, raw_key: int) -> bool:
+        """Handle keyboard panning; returns True if the key was consumed."""
+        mapping = {
+            'a': "left",
+            'd': "right",
+            'w': "up",
+            's': "down",
+        }
+
+        direction = None
+        if key not in (-1, None):
+            try:
+                char = chr(key).lower()
+            except ValueError:
+                char = ''
+            direction = mapping.get(char)
+
+        if direction is None and raw_key not in (-1, None):
+            try:
+                char = chr(raw_key & 0xFF).lower()
+            except ValueError:
+                char = ''
+            direction = mapping.get(char)
+        if direction is None:
+            return False
+
+        if self.current_view_roi is not None:
+            _, _, roi_w, roi_h, _, _ = self.current_view_roi
+        else:
+            roi_w, roi_h = self.width, self.height
+
+        zoom = max(1.0, float(self.view_zoom))
+        step_x = max(5, int(round((roi_w * 0.08) / zoom)))
+        step_y = max(5, int(round((roi_h * 0.08) / zoom)))
+
+        dx_image = dy_image = 0
+        if direction == "left":
+            dx_image = -step_x
+        elif direction == "right":
+            dx_image = step_x
+        elif direction == "up":
+            dy_image = -step_y
+        elif direction == "down":
+            dy_image = step_y
+
+        if dx_image == 0 and dy_image == 0:
+            return False
+
+        self._pan_by_image_units(dx_image, dy_image)
+        return True
                         
     def calibrate_fisheye_opencv(self, margin_pixels: int = 200) -> Optional[FisheyeCalibration]:
         """Use OpenCV's fisheye undistortion with estimated parameters"""
@@ -534,9 +682,14 @@ class FisheyeCorrector:
         # Save corrected image into output/
         corrected_filename = f"{base_name}_corrected.png"
         corrected_path = os.path.join(output_dir, corrected_filename)
-        cv2.imwrite(corrected_path, self.corrected_image)
         corrected_rel = os.path.relpath(corrected_path, project_root)
-        print(f"✓ Saved corrected image: {corrected_rel}")
+        image_saved = cv2.imwrite(corrected_path, self.corrected_image)
+        if image_saved:
+            print(f"✓ Saved corrected image: {corrected_rel}")
+        else:
+            print(f"✗ Failed to save corrected image: {corrected_rel}")
+            print("Please check write permissions and available disk space before retrying.")
+            return
         
         # Save calibration data into data/
         calibration_data = {
@@ -555,9 +708,14 @@ class FisheyeCorrector:
         
         calibration_filename = f"{base_name}_fisheye_calibration.json"
         calibration_path = os.path.join(data_dir, calibration_filename)
-        with open(calibration_path, 'w') as f:
-            json.dump(calibration_data, f, indent=2)
         calibration_rel = os.path.relpath(calibration_path, project_root)
+        try:
+            with open(calibration_path, 'w') as f:
+                json.dump(calibration_data, f, indent=2)
+        except OSError as exc:
+            print(f"✗ Failed to save calibration data: {calibration_rel} ({exc})")
+            print("Corrected image was saved successfully; retry the save once the filesystem issue is resolved.")
+            return
         print(f"✓ Saved calibration data: {calibration_rel}")
         
         # Display summary
@@ -596,47 +754,67 @@ class FisheyeCorrector:
         print("1. Click points along ANY visible wall edges (even just a few points help!)")
         print("2. Focus on the TOP wall - it's most visible and important")
         print("3. For side walls: click whatever small portions you can see")
-        print("4. Use MOUSE WHEEL to ZOOM, hold MIDDLE MOUSE to PAN for precision")
-        print("5. Press 'n' to advance to next wall (even with few points)")
-        print("6. Press CTRL+Z to undo last point")
-        print("7. After correction: Press 't' to toggle views, 's' to save")
+        print("4. Use '+' / '-' or the mouse wheel to zoom towards the cursor (double-click LEFT/RIGHT for quick zoom)")
+        print("5. Hold RIGHT mouse (or SHIFT+Left) and drag to pan, or tap W/A/S/D to nudge the view")
+        print("6. Press 'n' to advance to next wall (even with few points)")
+        print("7. Press Shift+Z/CTRL+Z to undo last point")
+        print("8. After correction: Press 't' to toggle views, 's' to save")
         print()
         print(f"Starting with {self.walls[0].wall_name} wall - click ANY visible curved edge")
         print("(Don't worry if you can only see small portions - that's normal for fisheye!)")
         print("TIP: The top wall is most important - spend time getting many points there")
         
+        wait_key = getattr(cv2, 'waitKeyEx', cv2.waitKey)
+
         try:
             while True:
                 cv2.imshow(window_name, self.display_image)
-                key = cv2.waitKey(1) & 0xFF
+                raw_key = wait_key(1)
+                key = raw_key & 0xFF if raw_key != -1 else -1
                 
                 # Check for window close event
                 if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
                     print("Window closed - exiting...")
                     break
                 
-                if key == ord('q'):
+                if self._key_in(key, raw_key, 'q', 'Q'):
                     print("Quitting...")
                     break
-                # Handle CTRL+Z (key code 26)
-                elif key == 26:  # CTRL+Z
+                # Handle undo (CTRL+Z, Shift+Z)
+                elif key in (26, ord('z'), ord('Z')):
                     self.undo_last_point()
-                elif key == ord('n'):
+                elif self._key_in(key, raw_key, '+', '='):
+                    cx, cy = self.cursor_pos
+                    self._zoom_at_screen_point(1, cx, cy)
+                    self.update_display()
+                elif self._key_in(key, raw_key, '-', '_'):
+                    cx, cy = self.cursor_pos
+                    self._zoom_at_screen_point(-1, cx, cy)
+                    self.update_display()
+                elif self._key_in(key, raw_key, 's', 'S'):
+                    # Save calibration and corrected image (handle before pan to avoid 's' conflict)
+                    if self.corrected_image is not None:
+                        self.save_calibration_and_image()
+                    else:
+                        print("Please complete fisheye correction first")
+                elif self._handle_keyboard_pan(key, raw_key):
+                    continue
+                elif self._key_in(key, raw_key, 'n', 'N'):
                     # Advance to next wall
                     self.advance_to_next_wall()
-                elif key == ord('r'):
+                elif self._key_in(key, raw_key, 'r', 'R'):
                     # Reset current wall
                     if self.current_wall_idx < len(self.walls):
                         wall_name = self.walls[self.current_wall_idx].wall_name
                         self.walls[self.current_wall_idx].points.clear()
                         self.update_display()
                         print(f"Reset {wall_name} wall points")
-                elif key == ord('c'):
+                elif self._key_in(key, raw_key, 'c', 'C'):
                     # Manual calculate distortion correction
                     if not self.auto_corrected:
                         print("Calculating distortion correction...")
                         self.auto_calculate_correction()
-                elif key == ord('t'):
+                elif self._key_in(key, raw_key, 't', 'T'):
                     # Toggle between original and corrected view
                     if self.corrected_image is not None:
                         self.show_corrected = not self.show_corrected
@@ -663,12 +841,7 @@ class FisheyeCorrector:
                             print("⚠ Arena corners may be outside view")
                     else:
                         print("Complete fisheye correction first")
-                elif key == ord('s'):
-                    # Save calibration and corrected image
-                    if self.corrected_image is not None:
-                        self.save_calibration_and_image()
-                    else:
-                        print("Please complete fisheye correction first")
+                # (save handled earlier to avoid conflict with 's' pan)
                         
         except KeyboardInterrupt:
             print("\nInterrupted by user - exiting...")

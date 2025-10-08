@@ -38,6 +38,10 @@ class ArenaCornerDetector:
         self.view_center: Tuple[int, int] = (self.width // 2, self.height // 2)
         self.is_panning: bool = False
         self.last_mouse_pos: Tuple[int, int] = (0, 0)
+        self.cursor_pos: Tuple[int, int] = (self.width // 2, self.height // 2)
+        # Track cursor in base-image coordinates for drawing a stable crosshair
+        self.cursor_base_xy: Tuple[int, int] = (self.width // 2, self.height // 2)
+        self.pan_button: Optional[str] = None
         # Cached ROI for screen <-> image coordinate mapping
         # (x0, y0, roi_w, roi_h, view_w, view_h)
         self.current_view_roi: Optional[Tuple[int, int, int, int, int, int]] = None
@@ -62,13 +66,55 @@ class ArenaCornerDetector:
         
     def mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events: left-click mark, middle-drag pan, wheel zoom"""
-        # Middle mouse pan
-        if event == cv2.EVENT_MBUTTONDOWN:
+        cursor_events = (
+            cv2.EVENT_MOUSEMOVE,
+            cv2.EVENT_LBUTTONDOWN,
+            cv2.EVENT_RBUTTONDOWN,
+            cv2.EVENT_MBUTTONDOWN,
+        )
+        wheel_event = getattr(cv2, 'EVENT_MOUSEWHEEL', None)
+        if wheel_event is not None:
+            cursor_events += (wheel_event,)
+        if event in cursor_events:
+            self.cursor_pos = (x, y)
+            bx, by = self._screen_to_base_xy(x, y)
+            if bx is not None and by is not None:
+                self.cursor_base_xy = (bx, by)
+            if event == cv2.EVENT_MOUSEMOVE:
+                self.update_display()
+
+        dbl_left = getattr(cv2, 'EVENT_LBUTTONDBLCLK', None)
+        dbl_right = getattr(cv2, 'EVENT_RBUTTONDBLCLK', None)
+        if dbl_left is not None and event == dbl_left:
+            self._zoom_at_screen_point(1, x, y)
+            self.update_display()
+            return
+        if dbl_right is not None and event == dbl_right:
+            self._zoom_at_screen_point(-1, x, y)
+            self.update_display()
+            return
+
+        shift_flag = getattr(cv2, 'EVENT_FLAG_SHIFTKEY', 0)
+        ctrl_flag = getattr(cv2, 'EVENT_FLAG_CTRLKEY', 0)
+        alt_flag = getattr(cv2, 'EVENT_FLAG_ALTKEY', 0)
+        modifier_active = any(
+            flag and (flags & flag) for flag in (shift_flag, ctrl_flag, alt_flag)
+        )
+
+        # Mouse/Modifier pan
+        if event == cv2.EVENT_MBUTTONDOWN or event == cv2.EVENT_RBUTTONDOWN or (event == cv2.EVENT_LBUTTONDOWN and modifier_active):
             self.is_panning = True
+            if event == cv2.EVENT_MBUTTONDOWN:
+                self.pan_button = 'middle'
+            elif event == cv2.EVENT_RBUTTONDOWN:
+                self.pan_button = 'right'
+            else:
+                self.pan_button = 'left'
             self.last_mouse_pos = (x, y)
             return
-        elif event == cv2.EVENT_MBUTTONUP:
+        elif event in (cv2.EVENT_MBUTTONUP, cv2.EVENT_RBUTTONUP) or (event == cv2.EVENT_LBUTTONUP and self.pan_button == 'left'):
             self.is_panning = False
+            self.pan_button = None
             return
         elif event == cv2.EVENT_MOUSEMOVE and self.is_panning:
             dx = x - self.last_mouse_pos[0]
@@ -93,75 +139,58 @@ class ArenaCornerDetector:
             self.mark_wall_point(int(bx), int(by))
             
     def mark_wall_point(self, x: int, y: int):
-        """Mark a point on the current wall (need 2 points per wall)"""
-        if self.current_wall_index < len(self.wall_sequence):
-            wall_name = self.wall_sequence[self.current_wall_index]
-            
-            # Initialize wall points list if needed
-            if wall_name not in self.wall_points:
-                self.wall_points[wall_name] = []
-                
-            # Only allow 2 points per wall
-            if len(self.wall_points[wall_name]) < 2:
-                self.wall_points[wall_name].append((x, y))
-                num_points = len(self.wall_points[wall_name])
-                
-                print(f"Added point ({x}, {y}) to {wall_name} wall [{num_points}/2 points]")
-                
-                # If we have 2 points, create the extended line
-                if num_points == 2:
-                    self.create_wall_line(wall_name)
-                    print(f"✓ {wall_name} wall line created! Press 'n' for next wall")
-                    
-                self.update_display()
-            else:
-                print(f"{wall_name} wall already has 2 points. Press 'n' for next wall or 'r' to reset")
-                
-    def create_wall_line(self, wall_name: str):
-        """Create extended line from 2 wall points"""
-        if wall_name not in self.wall_points or len(self.wall_points[wall_name]) != 2:
+        """Mark a point on the current wall (need 2 points per wall)."""
+        if self.current_wall_index >= len(self.wall_sequence):
+            print("All walls already processed; press 's' to save or 'r' to reset.")
             return
-            
-        p1, p2 = self.wall_points[wall_name]
-        
-        # Calculate line direction
-        dx = p2[0] - p1[0]
-        dy = p2[1] - p1[1]
-        
-        # Extend line to window edges
-        if abs(dx) > abs(dy):  # More horizontal than vertical
-            # Extend to left and right edges
-            if dx != 0:
-                # Calculate y values at x=0 and x=width
-                slope = dy / dx
-                y_at_0 = p1[1] - slope * p1[0]
-                y_at_width = p1[1] + slope * (self.width - p1[0])
-                
-                start_point = (0, y_at_0)
-                end_point = (self.width, y_at_width)
+
+        wall_name = self.wall_sequence[self.current_wall_index]
+        points = self.wall_points.setdefault(wall_name, [])
+
+        if len(points) >= 2:
+            print(f"{wall_name.capitalize()} wall already has 2 points (press 'n' to advance)")
+            return
+
+        points.append((x, y))
+        num_points = len(points)
+        print(f"Added point ({x}, {y}) to {wall_name} wall [{num_points}/2 points]")
+
+        if num_points == 2:
+            p1, p2 = points
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+
+            if dx == 0 and dy == 0:
+                points.pop()
+                print("Points are identical; need two distinct points for this wall")
+                return
+
+            if abs(dx) >= abs(dy):
+                # Treat as a horizontal-ish wall, extend left/right edges
+                if dx != 0:
+                    slope = dy / dx
+                    y_left = p1[1] - slope * p1[0]
+                    y_right = p1[1] + slope * (self.width - p1[0])
+                else:
+                    y_left = y_right = p1[1]
+                start_point = (0.0, y_left)
+                end_point = (float(self.width), y_right)
             else:
-                # Vertical line
-                start_point = (p1[0], 0)
-                end_point = (p1[0], self.height)
-        else:  # More vertical than horizontal
-            # Extend to top and bottom edges
-            if dy != 0:
-                # Calculate x values at y=0 and y=height
-                slope = dx / dy
-                x_at_0 = p1[0] - slope * p1[1]
-                x_at_height = p1[0] + slope * (self.height - p1[1])
-                
-                start_point = (x_at_0, 0)
-                end_point = (x_at_height, self.height)
-            else:
-                # Horizontal line
-                start_point = (0, p1[1])
-                end_point = (self.width, p1[1])
-                
-        self.wall_lines[wall_name] = (start_point, end_point)
-        
-        # Detect corners after each wall line is created
-        self.detect_corners()
+                # Treat as a vertical-ish wall, extend top/bottom edges
+                if dy != 0:
+                    slope = dx / dy
+                    x_top = p1[0] - slope * p1[1]
+                    x_bottom = p1[0] + slope * (self.height - p1[1])
+                else:
+                    x_top = x_bottom = p1[0]
+                start_point = (x_top, 0.0)
+                end_point = (x_bottom, float(self.height))
+
+            self.wall_lines[wall_name] = (start_point, end_point)
+            print(f"Created {wall_name} wall line")
+            self.detect_corners()
+
+        self.update_display()
         
     def detect_corners(self):
         """Detect arena corners from wall line intersections"""
@@ -333,8 +362,10 @@ class ArenaCornerDetector:
                     pt2 = corner_points[(i + 1) % 4]
                     self.draw_dashed_line(base, pt1, pt2, border_color, thickness=2, dash_length=12, alpha=0.3)
         
-        # Apply viewport to base image
-        self.display_image = self._apply_viewport(base)
+        # Apply viewport to base image and draw a crosshair at cursor
+        view = self._apply_viewport(base)
+        self._draw_crosshair(view)
+        self.display_image = view
 
     # -------------------- Viewport helpers --------------------
     def _apply_viewport(self, image: np.ndarray) -> np.ndarray:
@@ -353,6 +384,23 @@ class ArenaCornerDetector:
         view = cv2.resize(roi, (w, h), interpolation=cv2.INTER_NEAREST)
         self.current_view_roi = (x0, y0, roi_w, roi_h, w, h)
         return view
+
+    def _draw_crosshair(self, view_image: np.ndarray) -> None:
+        """Draw a small crosshair at the current cursor position mapped into the view image."""
+        if self.current_view_roi is None or view_image is None:
+            return
+        x0, y0, roi_w, roi_h, view_w, view_h = self.current_view_roi
+        bx, by = self.cursor_base_xy
+        vx = int(round((bx - x0) * float(view_w) / max(1.0, float(roi_w))))
+        vy = int(round((by - y0) * float(view_h) / max(1.0, float(roi_h))))
+        h, w = view_image.shape[:2]
+        vx = max(0, min(w - 1, vx))
+        vy = max(0, min(h - 1, vy))
+        size = 10
+        color = (255, 255, 255)
+        thickness = 1
+        cv2.line(view_image, (max(0, vx - size), vy), (min(w - 1, vx + size), vy), color, thickness, cv2.LINE_AA)
+        cv2.line(view_image, (vx, max(0, vy - size)), (vx, min(h - 1, vy + size)), color, thickness, cv2.LINE_AA)
 
     def _clamp_view_center(self, w: int, h: int) -> None:
         """Clamp view center so the ROI remains inside the image."""
@@ -394,11 +442,69 @@ class ArenaCornerDetector:
         """Pan viewport by a delta expressed in screen pixels."""
         if self.current_view_roi is None:
             return
-        x0, y0, roi_w, roi_h, view_w, view_h = self.current_view_roi
+        _, _, roi_w, roi_h, view_w, view_h = self.current_view_roi
         move_x = (dx_view * roi_w) / max(1, view_w)
         move_y = (dy_view * roi_h) / max(1, view_h)
         cx, cy = self.view_center
         self.view_center = (int(round(cx - move_x)), int(round(cy - move_y)))
+    def _pan_by_image_units(self, dx_image: int, dy_image: int) -> None:
+        """Pan the viewport by a delta in raw image coordinates."""
+        if dx_image == 0 and dy_image == 0:
+            return
+        cx, cy = self.view_center
+        self.view_center = (int(round(cx + dx_image)), int(round(cy + dy_image)))
+        self.update_display()
+    def _handle_keyboard_pan(self, key: int, raw_key: int) -> bool:
+        """Consume keyboard presses to pan the viewport."""
+        mapping = {
+            'a': "left",
+            'd': "right",
+            'w': "up",
+            's': "down",
+        }
+
+        direction = None
+        if key not in (-1, None):
+            try:
+                char = chr(key).lower()
+            except ValueError:
+                char = ''
+            direction = mapping.get(char)
+
+        if direction is None and raw_key not in (-1, None):
+            try:
+                char = chr(raw_key & 0xFF).lower()
+            except ValueError:
+                char = ''
+            direction = mapping.get(char)
+
+        if direction is None:
+            return False
+
+        if self.current_view_roi is not None:
+            _, _, roi_w, roi_h, _, _ = self.current_view_roi
+        else:
+            roi_w, roi_h = self.width, self.height
+
+        zoom = max(1.0, float(self.view_zoom))
+        step_x = max(5, int(round((roi_w * 0.08) / zoom)))
+        step_y = max(5, int(round((roi_h * 0.08) / zoom)))
+
+        dx_image = dy_image = 0
+        if direction == "left":
+            dx_image = -step_x
+        elif direction == "right":
+            dx_image = step_x
+        elif direction == "up":
+            dy_image = -step_y
+        elif direction == "down":
+            dy_image = step_y
+
+        if dx_image == 0 and dy_image == 0:
+            return False
+
+        self._pan_by_image_units(dx_image, dy_image)
+        return True
                        
     def save_corner_data(self):
         """Save detected corner data for rotation correction"""
@@ -465,7 +571,7 @@ class ArenaCornerDetector:
         print(f"✓ Saved corner data: {corner_data_rel}")
         
         # Display summary
-        print(f"\n" + "="*50)
+        print("\n" + "="*50)
         print("CORNER DETECTION SUMMARY")
         print("="*50)
         print(f"Source image: {self.image_path}")
@@ -474,15 +580,15 @@ class ArenaCornerDetector:
         print(f"Corners detected: {len(self.detected_corners)}")
         
         if self.detected_corners:
-            print(f"\nDetected corner positions:")
+            print("\nDetected corner positions:")
             for corner_name, (x, y) in self.detected_corners.items():
                 print(f"  {corner_name}: ({x:.1f}, {y:.1f})")
                 
-        print(f"\nFiles saved:")
+        print("\nFiles saved:")
         print(f"  {corner_image_rel} - Visual corner detection")
         print(f"  {corner_data_rel} - Corner data for rotation correction")
         
-        print(f"\nNext step:")
+        print("\nNext step:")
         print(f"  Use rotation correction tool with: {corner_data_path}")
         
     def run(self):
@@ -500,7 +606,9 @@ class ArenaCornerDetector:
         print("1. Mark 2 points per wall to define each wall line")
         print("2. Lines extend to window edges automatically")
         print("3. Corners detected from line intersections")
-        print("4. Press 'n' to advance, CTRL+Z to undo, 's' to save corners")
+        print("4. Use '+' / '-' or the mouse wheel to zoom towards the cursor (double-click LEFT/RIGHT for quick zoom)")
+        print("5. Hold RIGHT mouse (or SHIFT+Left) and drag to pan, or tap W/A/S/D to nudge the view")
+        print("6. Press 'n' to advance, Shift+Z/CTRL+Z to undo, 's' to save corners")
         print()
         print("WALL MARKING MODE")
         print("=" * 20)
@@ -508,10 +616,13 @@ class ArenaCornerDetector:
             first_wall = self.wall_sequence[0]
             print(f"Mark 2 points on the {first_wall} wall to define the wall line")
         
+        wait_key = getattr(cv2, 'waitKeyEx', cv2.waitKey)
+
         try:
             while True:
                 cv2.imshow(window_name, self.display_image)
-                key = cv2.waitKey(1) & 0xFF
+                raw_key = wait_key(1)
+                key = raw_key & 0xFF if raw_key != -1 else -1
                 
                 # Check for window close event
                 if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
@@ -524,12 +635,22 @@ class ArenaCornerDetector:
                 elif key == ord('n'):
                     # Advance to next wall
                     self.advance_to_next_wall()
-                elif key == 26:  # CTRL+Z
+                elif key in (ord('+'), ord('=')):
+                    cx, cy = self.cursor_pos
+                    self._zoom_at_screen_point(1, cx, cy)
+                    self.update_display()
+                elif key in (ord('-'), ord('_')):
+                    cx, cy = self.cursor_pos
+                    self._zoom_at_screen_point(-1, cx, cy)
+                    self.update_display()
+                elif key == ord('s'):
+                    # Save corner data (handle before pan to avoid 's' conflict)
+                    self.save_corner_data()
+                elif self._handle_keyboard_pan(key, raw_key):
+                    continue
+                elif key in (26, ord('z'), ord('Z')):  # CTRL+Z or Shift+Z
                     # Undo last point
                     self.undo_last_point()
-                elif key == ord('s'):
-                    # Save corner data
-                    self.save_corner_data()
                 elif key == ord('r'):
                     # Reset current wall
                     if self.current_wall_index < len(self.wall_sequence):

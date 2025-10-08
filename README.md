@@ -5,7 +5,8 @@ A comprehensive Python toolkit for processing fisheye images of underwater arena
 ## Project Structure
 
 ```
-├── tools/                  # Processing tools (Tool 1-6)
+├── tools/                  # Processing tools (Tool 1-7)
+├── src/                    # Programmatic APIs and shared utilities
 ├── data/                   # JSON data files (calibrations, transforms, grids)
 ├── output/                 # Processed images
 ├── images/                 # Input images
@@ -22,14 +23,14 @@ pip install -r requirements.txt
 
 ## Complete Processing Pipeline
 
-The toolkit consists of 6 sequential tools that transform raw fisheye images into calibrated, grid-based coordinate systems:
+The toolkit consists of 6 sequential tools that transform raw fisheye images into calibrated, grid-based coordinate systems, plus an auxiliary viewer (Tool 7) to map points between the original and rectified views:
 
 ### Tool 1: Fisheye Correction (`tools/fix_fisheye.py`)
 **Purpose:** Correct fisheye lens distortion in underwater arena images.
 
 **Usage:**
 ```bash
-python tools/fix_fisheye.py images/YOUR_IMAGE.png
+python3 tools/fix_fisheye.py images/GPS-Real.png
 ```
 
 **Process:**
@@ -56,7 +57,7 @@ python tools/fix_fisheye.py images/YOUR_IMAGE.png
 
 **Usage:**
 ```bash
-python tools/detect_arena_corners.py output/GPS-Real_corrected.png
+python3 tools/detect_arena_corners.py output/GPS-Real_corrected.png
 ```
 
 **Process:**
@@ -83,7 +84,11 @@ python tools/detect_arena_corners.py output/GPS-Real_corrected.png
 
 **Usage:**
 ```bash
-python tools/rectify_arena_square.py output/GPS-Real_corrected.png
+# Preferred (pass corners JSON from Tool 2)
+python3 tools/rectify_arena_square.py data/GPS-Real_corrected_corners.json
+
+# Or pass the corrected image path; the tool will auto-resolve data/GPS-Real_corrected_corners.json
+python3 tools/rectify_arena_square.py output/GPS-Real_corrected.png
 ```
 
 **Process:**
@@ -110,7 +115,11 @@ python tools/rectify_arena_square.py output/GPS-Real_corrected.png
 
 **Usage:**
 ```bash
-python tools/grid_overlay.py output/GPS-Real_rectified_oriented.png
+# Preferred: pass the rectified PNG from Tool 3
+python3 tools/grid_overlay.py output/GPS-Real_corrected_rectified_oriented.png
+
+# Alternatively: pass the transform JSON; the tool will resolve the rectified image path
+python3 tools/grid_overlay.py data/GPS-Real_corrected_transform.json
 ```
 
 **Process:**
@@ -141,7 +150,7 @@ python tools/grid_overlay.py output/GPS-Real_rectified_oriented.png
 
 **Usage:**
 ```bash
-python tools/grid_inspector.py output/GPS-Real_grid_8x6.png
+python3 tools/grid_inspector.py output/GPS-Real_grid_8x6.png
 ```
 
 **Process:**
@@ -161,7 +170,7 @@ python tools/grid_inspector.py output/GPS-Real_grid_8x6.png
 
 **Usage:**
 ```bash
-python tools/real_world_calibrator.py data/GPS-Real_corrected_rectified_oriented_grids.json
+python3 tools/real_world_calibrator.py data/GPS-Real_corrected_rectified_oriented_grids.json
 ```
 
 **Process:**
@@ -176,27 +185,81 @@ python tools/real_world_calibrator.py data/GPS-Real_corrected_rectified_oriented
 
 ---
 
+### Tool 7: Point Mapper (Original → Rectified) (`tools/point_mapper.py`)
+**Purpose:** Click on the original image and see where that point lands on the rectified top‑down image. Also draws how the entire original 2048×1536 frame maps onto the rectified canvas.
+
+**Usage:**
+```bash
+python3 tools/point_mapper.py --server-width 2048 --server-height 1536
+```
+
+**Process:**
+1. Loads fisheye calibration (`data/GPS-Real_fisheye_calibration.json`) and rectification transform (`data/GPS-Real_corrected_transform.json`).
+2. Undistorts the clicked original point (fisheye → corrected).
+3. Applies the rectification homography (corrected → rectified canvas).
+4. Renders the mapped point on the rectified image and overlays the transformed original bounds.
+
+**Controls:**
+- Left click (Original window): add a point and map it to Rectified
+- r: clear points
+- s: save a side-by-side snapshot to `output/`
+- q: quit
+
+**Notes:**
+- Use `--server-width/--server-height` to match your GPS server's original image resolution. Defaults match `images/GPS-Real.png` (2048×1536).
+
+---
+
+## Programmatic API (for other codebases)
+
+Use the minimal `GPSMapper` to map points and compute grid cells without any GUI or CLI.
+
+Location: `src/tools/gps_api.py`
+
+```python
+from src.tools.gps_api import GPSMapper
+
+mapper = GPSMapper(
+    fisheye_json="data/GPS-Real_fisheye_calibration.json",
+    transform_json="data/GPS-Real_corrected_transform.json",
+)
+
+# Map a GPS server point (original 2048x1536 space) to rectified canvas pixels
+x_rect, y_rect = mapper.map_original_to_rectified(258, 50)
+
+# Get grid cell from original (GPS) coordinates
+cell = mapper.grid_cell_from_original(258, 50, cols=11, rows=8)
+
+# Or from rectified pixels
+cell2 = mapper.grid_cell_from_rectified(x_rect, y_rect, cols=11, rows=8)
+```
+
+Notes:
+- Original size is assumed to be 2048×1536; update the constant in `gps_api.py` if your camera changes.
+- The scale factor (0.8) matches Tool 1’s corrected camera matrix; keep them in sync.
+
+
 ## Complete Workflow Example
 
 ### Manual Step-by-Step Processing
 ```bash
 # 1. Correct fisheye distortion
-python tools/fix_fisheye.py images/GPS-Real.png
+python3 tools/fix_fisheye.py /home/thomas/Dev/Python/Mermaid/images/GPS-Real.png
 
 # 2. Detect arena corners
-python tools/detect_arena_corners.py output/GPS-Real_corrected.png
+python3 tools/detect_arena_corners.py /home/thomas/Dev/Python/Mermaid/output/GPS-Real_corrected.png
 
-# 3. Rectify to top-down view
-python tools/rectify_arena_square.py output/GPS-Real_corrected.png
+# 3. Rectify to top-down view (prefer JSON)
+python3 tools/rectify_arena_square.py /home/thomas/Dev/Python/Mermaid/data/GPS-Real_corrected_corners.json
 
 # 4. Create coordinate grids
-python tools/grid_overlay.py output/GPS-Real_rectified_oriented.png
+python3 tools/grid_overlay.py /home/thomas/Dev/Python/Mermaid/data/GPS-Real_corrected_transform.json
 
 # 5. Inspect grid cells
-python tools/grid_inspector.py output/GPS-Real_grid_8x6.png
+python3 tools/grid_inspector.py /home/thomas/Dev/Python/Mermaid/output/GPS-Real_grid_8x6.png
 
 # 6. Calibrate real-world measurements
-python tools/real_world_calibrator.py data/GPS-Real_corrected_rectified_oriented_grids.json
+python3 tools/real_world_calibrator.py /home/thomas/Dev/Python/Mermaid/data/GPS-Real_corrected_rectified_oriented_grids.json
 ```
 
 ### Automated Pipeline (Planned)
@@ -204,10 +267,10 @@ When Tool 6 is implemented, a unified pipeline will be created in `main.py` that
 
 ```bash
 # Process entire pipeline automatically
-python main.py images/GPS-Real.png
+python3 main.py images/GPS-Real.png
 
 # With optional parameters
-python main.py images/GPS-Real.png --grid-size 8x6 --output-dir ./results
+python3 main.py images/GPS-Real.png --grid-size 8x6 --output-dir ./results
 ```
 
 This automated pipeline will:

@@ -210,11 +210,31 @@ def run(image_path: str) -> int:
     cv2.namedWindow(window, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     cv2.resizeWindow(window, min(1600, w), min(900, h))
 
+    # Track mouse for crosshair overlay
+    mouse_xy = [w // 2, h // 2]
+
+    def on_mouse(event, mx, my, _flags, _param):
+        if event == cv2.EVENT_MOUSEMOVE:
+            mouse_xy[0] = mx
+            mouse_xy[1] = my
+
+    cv2.setMouseCallback(window, on_mouse)
+
     while True:
         # Exit cleanly if the window X is pressed (check BEFORE imshow to avoid re-creating the window)
         if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
             break
         overlaid = render_grid(base, cols, rows, rect_bounds)
+        # Draw crosshair to ensure a consistent cursor visual
+        cx, cy = int(mouse_xy[0]), int(mouse_xy[1])
+        h_img, w_img = overlaid.shape[:2]
+        cx = max(0, min(w_img - 1, cx))
+        cy = max(0, min(h_img - 1, cy))
+        size = 10
+        color = (255, 255, 255)
+        thickness = 1
+        cv2.line(overlaid, (max(0, cx - size), cy), (min(w_img - 1, cx + size), cy), color, thickness, cv2.LINE_AA)
+        cv2.line(overlaid, (cx, max(0, cy - size)), (cx, min(h_img - 1, cy + size)), color, thickness, cv2.LINE_AA)
         cv2.imshow(window, overlaid)
         key = cv2.waitKey(16) & 0xFF
         if key == ord('q'):
@@ -314,10 +334,32 @@ def run(image_path: str) -> int:
 
 def main():
     parser = argparse.ArgumentParser(description="Grid overlay tool")
-    parser.add_argument("image_path", help="Path to the input image (e.g., rectified output)")
+    parser.add_argument(
+        "image_or_transform",
+        help="Path to rectified image PNG (preferred) OR transform JSON (will resolve rectified image)",
+    )
     args = parser.parse_args()
+
+    # Resolve input: allow passing transform JSON to find rectified image
+    image_path = args.image_or_transform
+    if image_path.lower().endswith(".json"):
+        try:
+            project_root, _, _ = ensure_output_dirs()
+            with open(image_path, "r") as f:
+                data = json.load(f)
+            rectified_rel = data.get("rectified_image") or data.get("source_image")
+            if not rectified_rel:
+                print("Error: transform JSON missing 'rectified_image' or 'source_image'")
+                return 1
+            # Normalize to absolute path relative to project root
+            rectified_rel = rectified_rel.replace("\\", "/")
+            image_path = rectified_rel if os.path.isabs(rectified_rel) else os.path.join(project_root, rectified_rel)
+        except Exception as e:
+            print(f"Error: unable to resolve image from JSON: {e}")
+            return 1
+
     try:
-        return run(args.image_path)
+        return run(image_path)
     except Exception as e:
         print(f"Error: {e}")
         return 1
