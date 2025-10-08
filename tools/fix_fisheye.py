@@ -19,6 +19,13 @@ import argparse
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, asdict
 
+# Optional Qt viewer for hidden-cursor mode
+try:
+    from src.tools.qt_viewer import run_viewer as qt_run_viewer
+    _HAVE_QT = True
+except Exception:
+    _HAVE_QT = False
+
 
 @dataclass
 class FisheyeCalibration:
@@ -738,6 +745,92 @@ class FisheyeCorrector:
         
     def run(self):
         """Run the fisheye correction tool"""
+        # Prefer Qt viewer (hidden OS cursor) if available
+        if _HAVE_QT:
+            print("Fisheye Correction Tool (Qt)")
+            print("=" * 40)
+            print("Instructions:")
+            print("1. Click points along ANY visible wall edges (even just a few points help!)")
+            print("2. Focus on the TOP wall - it's most visible and important")
+            print("3. For side walls: click whatever small portions you can see")
+            print("4. Mouse wheel zooms; Right/Middle drag pans; keys: n,z,t,r,s,q")
+            print()
+
+            pressed_btn = {"btn": None}
+
+            def frame_provider() -> np.ndarray:
+                self.update_display()
+                return self.display_image
+
+            def on_mouse(kind: str, mx: int, my: int, button_or_buttons: int, _mods: int, delta: int) -> None:
+                if kind == "move":
+                    self.mouse_callback(cv2.EVENT_MOUSEMOVE, mx, my, 0, None)
+                elif kind == "press":
+                    pressed_btn["btn"] = button_or_buttons
+                    if button_or_buttons == 1:
+                        self.mouse_callback(cv2.EVENT_LBUTTONDOWN, mx, my, 0, None)
+                    elif button_or_buttons == 2:
+                        self.mouse_callback(cv2.EVENT_RBUTTONDOWN, mx, my, 0, None)
+                    elif button_or_buttons == 4:
+                        self.mouse_callback(cv2.EVENT_MBUTTONDOWN, mx, my, 0, None)
+                elif kind == "release":
+                    btn = pressed_btn["btn"]
+                    pressed_btn["btn"] = None
+                    if btn == 1:
+                        self.mouse_callback(cv2.EVENT_LBUTTONUP, mx, my, 0, None)
+                    elif btn == 2:
+                        self.mouse_callback(cv2.EVENT_RBUTTONUP, mx, my, 0, None)
+                    elif btn == 4:
+                        self.mouse_callback(cv2.EVENT_MBUTTONUP, mx, my, 0, None)
+                elif kind == "wheel":
+                    direction = 1 if delta > 0 else -1
+                    self._zoom_at_screen_point(direction, mx, my)
+                    self.update_display()
+
+            def on_key(key: int) -> None:
+                try:
+                    ch = chr(key)
+                except Exception:
+                    ch = ''
+                if ch.lower() == 'q':
+                    from PyQt5 import QtWidgets
+                    QtWidgets.QApplication.instance().quit()
+                elif ch.lower() == 'z':
+                    self.undo_last_point()
+                elif ch in ['+', '=']:
+                    cx, cy = self.cursor_pos
+                    self._zoom_at_screen_point(1, cx, cy)
+                    self.update_display()
+                elif ch in ['-', '_']:
+                    cx, cy = self.cursor_pos
+                    self._zoom_at_screen_point(-1, cx, cy)
+                    self.update_display()
+                elif ch.lower() == 'n':
+                    self.advance_to_next_wall()
+                elif ch.lower() == 'r':
+                    if self.current_wall_idx < len(self.walls):
+                        wall_name = self.walls[self.current_wall_idx].wall_name
+                        self.walls[self.current_wall_idx].points.clear()
+                        self.update_display()
+                        print(f"Reset {wall_name} wall points")
+                elif ch.lower() == 'c':
+                    if not self.auto_corrected:
+                        print("Calculating distortion correction...")
+                        self.auto_calculate_correction()
+                elif ch.lower() == 't':
+                    if self.corrected_image is not None:
+                        self.show_corrected = not self.show_corrected
+                        self.update_display()
+                    else:
+                        print("Complete fisheye correction first")
+                elif ch.lower() == 's':
+                    if self.corrected_image is not None:
+                        self.save_calibration_and_image()
+                    else:
+                        print("Please complete fisheye correction first")
+
+            # Start Qt event loop with hidden cursor
+            return qt_run_viewer("Fisheye Correction", frame_provider, on_mouse, on_key, hide_cursor=True)
         window_name = "Fisheye Correction"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         

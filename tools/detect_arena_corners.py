@@ -20,6 +20,13 @@ import argparse
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass, asdict
 
+# Optional Qt viewer for hidden-cursor mode
+try:
+    from src.tools.qt_viewer import run_viewer as qt_run_viewer
+    _HAVE_QT = True
+except Exception:
+    _HAVE_QT = False
+
 
 class ArenaCornerDetector:
     """Tool for detecting arena corners from corrected fisheye images"""
@@ -593,6 +600,62 @@ class ArenaCornerDetector:
         
     def run(self):
         """Run the arena corner detection tool"""
+        if _HAVE_QT:
+            print("Arena Corner Detection (Qt)")
+            print("=" * 40)
+            print("Instructions:")
+            print("1. Mark 2 points per wall to define each wall line")
+            print("2. Lines extend to window edges automatically")
+            print("3. Wheel zoom; Right/Middle drag pan; keys: n,z,s,r,q")
+
+            def frame_provider() -> np.ndarray:
+                self.update_display()
+                return self.display_image
+
+            def on_mouse(kind: str, mx: int, my: int, button_or_buttons: int, _mods: int, delta: int) -> None:
+                if kind == "move":
+                    self.mouse_callback(cv2.EVENT_MOUSEMOVE, mx, my, 0, None)
+                elif kind == "press":
+                    if button_or_buttons == 1:
+                        self.mouse_callback(cv2.EVENT_LBUTTONDOWN, mx, my, 0, None)
+                    elif button_or_buttons == 2:
+                        self.mouse_callback(cv2.EVENT_RBUTTONDOWN, mx, my, 0, None)
+                    elif button_or_buttons == 4:
+                        self.mouse_callback(cv2.EVENT_MBUTTONDOWN, mx, my, 0, None)
+                elif kind == "release":
+                    # No-op; placement happens on press
+                    pass
+                elif kind == "wheel":
+                    direction = 1 if delta > 0 else -1
+                    self._zoom_at_screen_point(direction, mx, my)
+                    self.update_display()
+
+            def on_key(key: int) -> None:
+                try:
+                    ch = chr(key)
+                except Exception:
+                    ch = ''
+                if ch.lower() == 'q':
+                    from PyQt5 import QtWidgets
+                    QtWidgets.QApplication.instance().quit()
+                elif ch.lower() == 'n':
+                    self.advance_to_next_wall()
+                elif ch.lower() == 'z':
+                    self.undo_last_point()
+                elif ch.lower() == 's':
+                    self.save_corner_data()
+                elif ch.lower() == 'r':
+                    if self.current_wall_index < len(self.wall_sequence):
+                        wall_name = self.wall_sequence[self.current_wall_index]
+                        if wall_name in self.wall_points:
+                            self.wall_points[wall_name].clear()
+                            if wall_name in self.wall_lines:
+                                del self.wall_lines[wall_name]
+                            print(f"Reset {wall_name} wall points")
+                            self.detect_corners()
+                            self.update_display()
+
+            return qt_run_viewer("Arena Corner Detection", frame_provider, on_mouse, on_key, hide_cursor=True)
         window_name = "Arena Corner Detection"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.resizeWindow(window_name, self.width, self.height)

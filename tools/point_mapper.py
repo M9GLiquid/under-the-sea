@@ -224,6 +224,23 @@ class PointMapperApp:
             label = f"P{i+1}"
             cv2.putText(right, label, (rx + 6, ry - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
+        # Draw crosshairs for consistent cursor visuals
+        def draw_crosshair(img: np.ndarray, x: int, y: int) -> None:
+            h, w = img.shape[:2]
+            x = max(0, min(w - 1, int(x)))
+            y = max(0, min(h - 1, int(y)))
+            size = 10
+            color = (255, 255, 255)
+            thickness = 1
+            cv2.line(img, (max(0, x - size), y), (min(w - 1, x + size), y), color, thickness, cv2.LINE_AA)
+            cv2.line(img, (x, max(0, y - size)), (x, min(h - 1, y + size)), color, thickness, cv2.LINE_AA)
+
+        if not hasattr(self, "_mouse_left"):  # default positions
+            self._mouse_left = [left.shape[1] // 2, left.shape[0] // 2]
+            self._mouse_right = [right.shape[1] // 2, right.shape[0] // 2]
+        draw_crosshair(left, self._mouse_left[0], self._mouse_left[1])
+        draw_crosshair(right, self._mouse_right[0], self._mouse_right[1])
+
         cv2.imshow(ORIGINAL_WIN_TITLE, left)
         cv2.imshow(RECTIFIED_WIN_TITLE, right)
 
@@ -237,6 +254,14 @@ class PointMapperApp:
     def _mouse_callback_original(self, event, x, y, flags, param):  # noqa: ANN001 - OpenCV signature
         if event == cv2.EVENT_LBUTTONDOWN:
             self._on_left_click(int(x), int(y))
+        elif event == cv2.EVENT_MOUSEMOVE:
+            self._mouse_left = [int(x), int(y)]
+            self._refresh_views()
+
+    def _mouse_callback_rectified(self, event, x, y, flags, param):  # noqa: ANN001 - OpenCV signature
+        if event == cv2.EVENT_MOUSEMOVE:
+            self._mouse_right = [int(x), int(y)]
+            self._refresh_views()
 
     def run(self) -> int:
         cv2.namedWindow(ORIGINAL_WIN_TITLE, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -249,6 +274,7 @@ class PointMapperApp:
         cv2.resizeWindow(RECTIFIED_WIN_TITLE, min(1200, wr), min(800, hr))
 
         cv2.setMouseCallback(ORIGINAL_WIN_TITLE, self._mouse_callback_original)
+        cv2.setMouseCallback(RECTIFIED_WIN_TITLE, self._mouse_callback_rectified)
         self._refresh_views()
 
         print("Point Mapper (Tool #7)")

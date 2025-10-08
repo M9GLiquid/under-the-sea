@@ -217,7 +217,8 @@ Use the minimal `GPSMapper` to map points and compute grid cells without any GUI
 Location: `src/tools/gps_api.py`
 
 ```python
-from src.tools.gps_api import GPSMapper
+from src.tools.gps_api import GPSMapp.venv\Scripts\Activate.ps1
+er
 
 mapper = GPSMapper(
     fisheye_json="data/GPS-Real_fisheye_calibration.json",
