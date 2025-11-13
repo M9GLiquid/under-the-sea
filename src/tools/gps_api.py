@@ -8,9 +8,24 @@ Usage example:
 
     from src.tools.gps_api import GPSMapper
 
+    # Method 1: Using default server size (2048x1536)
     mapper = GPSMapper(
         fisheye_json="data/GPS-Real_fisheye_calibration.json",
         transform_json="data/GPS-Real_corrected_transform.json",
+    )
+
+    # Method 2: Specify custom server size for different image resolutions
+    mapper = GPSMapper(
+        fisheye_json="data/GPS-Real_fisheye_calibration.json",
+        transform_json="data/GPS-Real_corrected_transform.json",
+        server_size=(1920, 1080),  # Custom resolution
+    )
+
+    # Method 3: Auto-detect from image file (recommended for API usage)
+    mapper = GPSMapper.from_image(
+        fisheye_json="data/GPS-Real_fisheye_calibration.json",
+        transform_json="data/GPS-Real_corrected_transform.json",
+        image_path="path/to/your/server/image.jpg",
     )
 
     xr, yr = mapper.map_original_to_rectified(258, 50)
@@ -28,7 +43,8 @@ import numpy as np
 
 
 # The original GPS server image size (width, height)
-SERVER_SIZE: Tuple[int, int] = (2048, 1536)
+# Can be overridden in constructor for different image sizes
+DEFAULT_SERVER_SIZE: Tuple[int, int] = (2048, 1536)
 
 # Must match fix_fisheye correction step; used to show more area in corrected image
 SCALE_FACTOR: float = 0.8
@@ -57,7 +73,7 @@ def _apply_homography(x: float, y: float, homography: np.ndarray) -> Tuple[float
 class GPSMapper:
     """Small mapping helper with cached calibration and transform data."""
 
-    def __init__(self, fisheye_json: str, transform_json: str) -> None:
+    def __init__(self, fisheye_json: str, transform_json: str, server_size: Tuple[int, int] = None) -> None:
         # Load fisheye calibration
         fisheye_bundle = _load_json(fisheye_json)
         fisheye = fisheye_bundle.get("fisheye_calibration", fisheye_bundle)
@@ -66,6 +82,9 @@ class GPSMapper:
         self.calib_size: Tuple[int, int] = (int(fisheye["image_size"][0]), int(fisheye["image_size"][1]))
         self.margin_pixels = int(fisheye.get("margin_pixels", 0))
         self.new_camera_matrix = _build_new_camera_matrix(self.camera_matrix, self.margin_pixels, SCALE_FACTOR)
+
+        # Server image size (use provided or default)
+        self.server_size = server_size if server_size is not None else DEFAULT_SERVER_SIZE
 
         # Load rectification transform
         t = _load_json(transform_json)
@@ -85,8 +104,8 @@ class GPSMapper:
     def map_original_to_rectified(self, x: float, y: float) -> Tuple[float, float]:
         """Map a point from original (GPS server) to rectified canvas pixels."""
         # Scale original point to the calibration resolution if needed
-        sx = float(self.calib_size[0]) / float(SERVER_SIZE[0])
-        sy = float(self.calib_size[1]) / float(SERVER_SIZE[1])
+        sx = float(self.calib_size[0]) / float(self.server_size[0])
+        sy = float(self.calib_size[1]) / float(self.server_size[1])
         x_cal = float(x) * sx
         y_cal = float(y) * sy
 
@@ -127,3 +146,22 @@ class GPSMapper:
         info["rectified_xy"] = {"x": xr, "y": yr}
         info["original_xy"] = {"x": x, "y": y}
         return info
+
+    @classmethod
+    def from_image(cls, fisheye_json: str, transform_json: str, image_path: str) -> 'GPSMapper':
+        """Create a GPSMapper by auto-detecting server size from an image file.
+
+        Args:
+            fisheye_json: Path to fisheye calibration JSON
+            transform_json: Path to rectification transform JSON
+            image_path: Path to the original server image to detect size from
+
+        Returns:
+            GPSMapper instance configured with auto-detected image size
+        """
+        import cv2
+        img = cv2.imread(image_path)
+        if img is None:
+            raise FileNotFoundError(f"Could not load image: {image_path}")
+        server_size = (img.shape[1], img.shape[0])  # (width, height)
+        return cls(fisheye_json, transform_json, server_size)

@@ -1,0 +1,19 @@
+{
+  "source_image": "D:\\Code\\Python\\Under-The-Sea\\output/GPS-Real_corrected_rectified_oriented.png",
+  "arena_bounds": {
+    "left": 358,
+    "top": 505,
+    "right": 1695,
+    "bottom": 1374
+  },
+  "transform_json": "data\\GPS-Real_corrected_transform.json",
+  "current_grid": {
+    "cols": 14,
+    "rows": 9,
+    "cell_size_px": {
+      "x": 96,
+      "y": 97
+    }
+  },
+  "image": "output\\GPS-Real_corrected_rectified_oriented_grid_14x9.png"
+}
