@@ -1,62 +1,414 @@
 #!/usr/bin/env python3
 """
-GPS Grid Overlay System
-Main application entry point for the coordinate grid overlay system.
+Unified Pipeline - Run all Tools 1-8 sequentially
+
+This script orchestrates the complete processing pipeline automatically:
+1. Tool 1: Fisheye Correction (interactive)
+2. Tool 2: Arena Corner Detection (interactive)
+3. Tool 3: Arena Rectification (automated)
+4. Tool 4: Grid Overlay (interactive)
+5. Tool 6: Real-World Calibration (interactive)
+6. Tool 7: Point Mapper (interactive viewer)
+7. Tool 8: GPS Overlay API Creator (automated)
+
+Usage:
+    python main.py
+    
+Uses images/GPS-Real.png as input (fetch from camera separately if needed).
+No arguments needed - everything is automatic!
 """
 
 import sys
+import subprocess
+import time
 import argparse
 from pathlib import Path
+from typing import Set
+
+
+def get_project_root() -> Path:
+    """Get the project root directory."""
+    return Path(__file__).resolve().parent
+
+
+def run_tool(tool_name: str, args: list, description: str) -> bool:
+    """
+    Run a tool script and return True if successful.
+    Waits for the tool to complete before returning.
+    
+    Args:
+        tool_name: Name of the tool script (e.g., "Tool_1_Fix_Fisheye.py")
+        args: List of command-line arguments to pass to the tool
+        description: Human-readable description for progress output
+    
+    Returns:
+        True if tool exited successfully, False otherwise
+    """
+    project_root = get_project_root()
+    tool_path = project_root / "tools" / tool_name
+    
+    if not tool_path.exists():
+        print(f"❌ Error: Tool not found: {tool_path}")
+        return False
+    
+    print(f"\n{'='*60}")
+    print(f"🔧 {description}")
+    print(f"{'='*60}")
+    print(f"Running: python {tool_path.name} {' '.join(args)}")
+    print(f"\n💡 Instructions:")
+    print(f"   - Complete your work in this tool")
+    print(f"   - Press 's' to SAVE your work")
+    print(f"   - Press 'q' to QUIT and continue to next tool")
+    print(f"   - The next tool will start automatically after you quit")
+    print()
+    
+    try:
+        # Run tool and wait for it to complete
+        # stdout/stderr are inherited so user sees output in real-time
+        result = subprocess.run(
+            [sys.executable, str(tool_path)] + args,
+            cwd=str(project_root),
+            check=False,  # Don't raise exception, just check returncode
+            stdout=None,  # Inherit stdout (show output)
+            stderr=None,  # Inherit stderr (show errors)
+        )
+        
+        # Wait is implicit in subprocess.run() - it blocks until process completes
+        # Give a moment for any windows to fully close
+        time.sleep(0.5)
+        
+        if result.returncode == 0:
+            print(f"\n✅ {description} completed successfully")
+            return True
+        elif result.returncode == 2:
+            # Special exit code: user wants to quit entire pipeline
+            print(f"\n⚠️  {description} - User requested to quit pipeline")
+            return "quit_pipeline"
+        else:
+            print(f"\n❌ {description} failed with exit code {result.returncode}")
+            return False
+            
+    except KeyboardInterrupt:
+        print(f"\n⚠️  Interrupted by user during {description}")
+        return False
+    except Exception as e:
+        print(f"\n❌ Error running {description}: {e}")
+        return False
+
+
+def derive_output_paths(base_name: str) -> dict:
+    """
+    Derive all intermediate file paths based on base image name.
+    
+    Args:
+        base_name: Base name without extension (e.g., "GPS-Real")
+    
+    Returns:
+        Dictionary with all expected file paths
+    """
+    project_root = get_project_root()
+    return {
+        "original_image": project_root / "images" / f"{base_name}.png",
+        "corrected_image": project_root / "output" / f"{base_name}_corrected.png",
+        "fisheye_calibration": project_root / "data" / f"{base_name}_fisheye_calibration.json",
+        "corners_image": project_root / "output" / f"{base_name}_corners.png",
+        "corners_json": project_root / "data" / f"{base_name}_corrected_corners.json",
+        "rectified_image": project_root / "output" / f"{base_name}_corrected_rectified_oriented.png",
+        "transform_json": project_root / "data" / f"{base_name}_corrected_transform.json",
+        "grid_json": project_root / "data" / f"{base_name}_corrected_rectified_oriented_grid.json",
+        "calibration_json": project_root / "data" / f"{base_name}_corrected_rectified_oriented_calibration.json",
+        "gps_overlay_json": project_root / "data" / "gps_overlay.json",
+    }
+
+
+def check_file_exists(file_path: Path, description: str) -> bool:
+    """Check if a file exists and print status."""
+    if file_path.exists():
+        print(f"  ✓ {description}: {file_path.name}")
+        return True
+    else:
+        print(f"  ✗ {description}: {file_path.name} (missing)")
+        return False
+
+
+def parse_tool_spec(spec: str) -> Set[int]:
+    """
+    Parse tool specification string into a set of tool numbers.
+    
+    Supports:
+    - Individual tools: "1,2,3"
+    - Ranges: "1-4"
+    - Combinations: "1,3-5,7"
+    - All: "1-8" or "all"
+    
+    Args:
+        spec: Tool specification string
+    
+    Returns:
+        Set of tool numbers (1-8)
+    """
+    if not spec or spec.lower() == "all":
+        return set(range(1, 9))  # Tools 1-8
+    
+    tools = set()
+    parts = spec.split(',')
+    
+    for part in parts:
+        part = part.strip()
+        if '-' in part:
+            # Range: "1-4"
+            try:
+                start, end = part.split('-')
+                start = int(start.strip())
+                end = int(end.strip())
+                tools.update(range(start, end + 1))
+            except ValueError:
+                raise ValueError(f"Invalid range format: {part}")
+        else:
+            # Single number
+            try:
+                tools.add(int(part))
+            except ValueError:
+                raise ValueError(f"Invalid tool number: {part}")
+    
+    # Validate tool numbers
+    valid_tools = set(range(1, 9))
+    invalid = tools - valid_tools
+    if invalid:
+        raise ValueError(f"Invalid tool numbers: {invalid}. Valid tools are 1-8")
+    
+    return tools
+
 
 def main():
-    """Main application entry point."""
     parser = argparse.ArgumentParser(
-        description="GPS Grid Overlay System - Create coordinate grids on overhead images"
+        description="Unified Pipeline - Run Tools 1-8 sequentially",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py                    # Run all tools (1-8)
+  python main.py --tool 1,2,3      # Run tools 1, 2, and 3
+  python main.py --tool 1-4         # Run tools 1 through 4
+  python main.py --tool 1,3-5,7    # Run tools 1, 3, 4, 5, and 7
+  python main.py --tool 6           # Run only tool 6
+        """
     )
     parser.add_argument(
-        "image_path",
+        "--tool",
         type=str,
-        help="Path to the overhead image file"
-    )
-    parser.add_argument(
-        "--grid-width",
-        type=int,
-        default=50,
-        help="Grid cell width in pixels (default: 50)"
-    )
-    parser.add_argument(
-        "--grid-height", 
-        type=int,
-        default=50,
-        help="Grid cell height in pixels (default: 50)"
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="./data",
-        help="Output directory for exported data (default: ./data)"
+        default="all",
+        help="Tools to run: comma-separated list (1,2,3), ranges (1-4), or 'all' (default: all)"
     )
     
     args = parser.parse_args()
     
-    # Validate image file exists
-    image_path = Path(args.image_path)
+    # Parse tool specification
+    try:
+        tools_to_run = parse_tool_spec(args.tool)
+    except ValueError as e:
+        print(f"❌ Error parsing --tool argument: {e}")
+        return 1
+    
+    project_root = get_project_root()
+    
+    # Always use images/GPS-Real.png as input
+    image_path = project_root / "images" / "GPS-Real.png"
+    
     if not image_path.exists():
-        print(f"Error: Image file '{args.image_path}' not found.")
-        sys.exit(1)
+        print(f"❌ Error: Input image not found: {image_path}")
+        print("   Please ensure images/GPS-Real.png exists")
+        print("   (Fetch from camera separately using: python tools/axis_test.py)")
+        return 1
     
-    # Create output directory if it doesn't exist
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n📷 Using input image: {image_path.name}")
+    print(f"🔧 Tools to run: {sorted(tools_to_run)}")
     
-    print(f"GPS Grid Overlay System")
-    print(f"Image: {args.image_path}")
-    print(f"Grid size: {args.grid_width}x{args.grid_height} pixels")
-    print(f"Output directory: {args.output_dir}")
+    # Extract base name from image path
+    base_name = image_path.stem
+    if "_corrected" in base_name:
+        base_name = base_name.replace("_corrected", "")
+    if "_rectified" in base_name:
+        base_name = base_name.split("_rectified")[0]
     
-    # TODO: Initialize and run the main application components
-    # This will be implemented in subsequent tasks
-    print("Application components will be initialized in subsequent implementation tasks.")
+    print(f"\n{'='*60}")
+    print(f"🚀 Starting Unified Pipeline")
+    print(f"{'='*60}")
+    print(f"Input image: {image_path.name}")
+    print(f"Base name: {base_name}")
+    print()
+    
+    # Derive all file paths
+    paths = derive_output_paths(base_name)
+    
+    # Tool 1: Fisheye Correction
+    if 1 in tools_to_run:
+        result = run_tool(
+            "Tool_1_Fix_Fisheye.py",
+            [str(image_path)],
+            "Tool 1: Fisheye Correction"
+        )
+        if result == "quit_pipeline":
+            print("\n⚠️  Pipeline stopped by user.")
+            return 0
+        if not result:
+            print("\n❌ Tool 1 failed. Cannot continue.")
+            return 1
+        # Update image path for next tool
+        image_path = paths["corrected_image"]
+    else:
+        print("\n⏭️  Skipping Tool 1 (not in --tool list)")
+        if paths["corrected_image"].exists():
+            image_path = paths["corrected_image"]
+    
+    # Tool 2: Arena Corner Detection
+    if 2 in tools_to_run:
+        result = run_tool(
+            "Tool_2_Detect_Arena_Corners.py",
+            [str(image_path)],
+            "Tool 2: Arena Corner Detection"
+        )
+        if result == "quit_pipeline":
+            print("\n⚠️  Pipeline stopped by user.")
+            return 0
+        if not result:
+            print("\n❌ Tool 2 failed. Cannot continue.")
+            return 1
+    else:
+        print("\n⏭️  Skipping Tool 2 (not in --tool list)")
+    
+    # Tool 3: Arena Rectification (automated)
+    if 3 in tools_to_run:
+        corners_input = paths["corners_json"]
+        if not run_tool(
+            "Tool_3_Rectify_Arena_Square.py",
+            [str(corners_input)],
+            "Tool 3: Arena Rectification"
+        ):
+            print("\n❌ Tool 3 failed. Cannot continue.")
+            return 1
+    else:
+        print("\n⏭️  Skipping Tool 3 (not in --tool list)")
+    
+    # Tool 4: Grid Overlay
+    if 4 in tools_to_run:
+        rectified_input = paths["rectified_image"]
+        result = run_tool(
+            "Tool_4_Grid_Overlay.py",
+            [str(rectified_input)],
+            "Tool 4: Grid Overlay"
+        )
+        if result == "quit_pipeline":
+            print("\n⚠️  Pipeline stopped by user.")
+            return 0
+        if not result:
+            print("\n❌ Tool 4 failed. Cannot continue.")
+            return 1
+    else:
+        print("\n⏭️  Skipping Tool 4 (not in --tool list)")
+    
+    # Tool 5: Grid Inspector (optional viewer)
+    if 5 in tools_to_run:
+        # Find grid image - it might have different dimensions in filename
+        grid_images = list((project_root / "output").glob(f"{base_name}_corrected_rectified_oriented_grid_*.png"))
+        if grid_images:
+            grid_image = grid_images[0]  # Use first match
+            run_tool(
+                "Tool_5_Grid_Inspector.py",
+                [str(grid_image)],
+                "Tool 5: Grid Inspector (Viewer)"
+            )
+        else:
+            print("\n⚠️  No grid image found for Tool 5. Skipping.")
+    else:
+        print("\n⏭️  Skipping Tool 5 (not in --tool list)")
+    
+    # Tool 6: Real-World Calibration
+    if 6 in tools_to_run:
+        grids_input = paths["grid_json"]
+        result = run_tool(
+            "Tool_6_Real_World_Calibrator.py",
+            [str(grids_input)],
+            "Tool 6: Real-World Calibration"
+        )
+        if result == "quit_pipeline":
+            print("\n⚠️  Pipeline stopped by user.")
+            return 0
+        if not result:
+            print("\n⚠️  Tool 6 failed. Continuing without real-world calibration.")
+            print("   You can run it manually later if needed.")
+    else:
+        print("\n⏭️  Skipping Tool 6 (not in --tool list)")
+    
+    # Tool 7: Point Mapper (interactive viewer)
+    if 7 in tools_to_run:
+        tool7_args = [
+            "--fisheye-json", str(paths["fisheye_calibration"]),
+            "--transform-json", str(paths["transform_json"])
+        ]
+        result = run_tool(
+            "Tool_7_Point_Mapper.py",
+            tool7_args,
+            "Tool 7: Point Mapper (Viewer)"
+        )
+        if result == "quit_pipeline":
+            print("\n⚠️  Pipeline stopped by user.")
+            return 0
+        if not result:
+            print("\n⚠️  Tool 7 failed. Continuing to next tool.")
+    else:
+        print("\n⏭️  Skipping Tool 7 (not in --tool list)")
+    
+    # Tool 8: GPS Overlay API Creator (automated)
+    if 8 in tools_to_run:
+        tool8_args = [
+            "--fisheye-json", str(paths["fisheye_calibration"]),
+            "--transform-json", str(paths["transform_json"]),
+            "--grids-json", str(paths["grid_json"]),
+            "--output", str(paths["gps_overlay_json"])
+        ]
+        
+        # Add calibration JSON if it exists
+        if paths["calibration_json"].exists():
+            tool8_args.extend(["--calibration-json", str(paths["calibration_json"])])
+        
+        if not run_tool(
+            "Tool_8_GPS_Overlay.py",
+            tool8_args,
+            "Tool 8: GPS Overlay API Creator"
+        ):
+            print("\n❌ Tool 8 failed.")
+            return 1
+    else:
+        print("\n⏭️  Skipping Tool 8 (not in --tool list)")
+    
+    # Final summary
+    print(f"\n{'='*60}")
+    print(f"✅ Pipeline Complete!")
+    print(f"{'='*60}")
+    print("\nGenerated files:")
+    check_file_exists(paths["corrected_image"], "Corrected image")
+    check_file_exists(paths["fisheye_calibration"], "Fisheye calibration")
+    check_file_exists(paths["corners_json"], "Corners JSON")
+    check_file_exists(paths["rectified_image"], "Rectified image")
+    check_file_exists(paths["transform_json"], "Transform JSON")
+    check_file_exists(paths["grid_json"], "Grid JSON")
+    if paths["calibration_json"].exists():
+        check_file_exists(paths["calibration_json"], "Real-world calibration")
+    check_file_exists(paths["gps_overlay_json"], "GPS Overlay JSON (final output)")
+    
+    # Check if api/ folder was created
+    api_dir = project_root / "api"
+    if api_dir.exists():
+        api_files = list(api_dir.glob("*"))
+        if api_files:
+            print(f"\n📦 API Package:")
+            print(f"  Location: api/")
+            print(f"  Files: {len(api_files)} file(s) ready for export")
+            print(f"  Copy the 'api/' folder to your project to use the GPSOverlay API")
+    
+    print(f"\n🎉 All done! Final output: {paths['gps_overlay_json'].name}")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

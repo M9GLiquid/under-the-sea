@@ -73,6 +73,7 @@ class FisheyeCorrector:
         self.original_lab = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2LAB).astype(np.float32)
         self.snap_enabled: bool = True
         self.snap_sample_offset: int = 4  # Base offset, will be multiplied by 1.5 in sampling functions
+        self._quit_pipeline: bool = False  # Flag to track if user wants to quit entire pipeline
         self.snap_distance_weight: float = 0.5  # Reduced distance penalty for more snapping
         self.snap_debug_mode: bool = False  # Debug visualization for snapping
         self.snap_debug_info: Optional[dict] = None  # Store debug info for visualization
@@ -132,6 +133,16 @@ class FisheyeCorrector:
         
     def mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events for point collection with snapping assistance."""
+        # Adjust for header offset (header is 80px tall)
+        header_height = 80
+        if y < header_height:
+            # Mouse is in header area, ignore clicks but allow cursor tracking
+            if event == cv2.EVENT_MOUSEMOVE:
+                self.cursor_pos = (x, y)
+            return
+        # Adjust y coordinate to account for header
+        y_adjusted = y - header_height
+        
         cursor_events = (
             cv2.EVENT_MOUSEMOVE,
             cv2.EVENT_LBUTTONDOWN,
@@ -143,14 +154,14 @@ class FisheyeCorrector:
             cursor_events += (wheel_event,)
         if event in cursor_events:
             self.cursor_pos = (x, y)
-            bx, by = self._screen_to_base_xy(x, y)
+            bx, by = self._screen_to_base_xy(x, y_adjusted)
             if bx is not None and by is not None:
                 self.cursor_base_xy = (bx, by)
             # Refresh view to move crosshair smoothly with the mouse
             if event == cv2.EVENT_MOUSEMOVE:
                 self.update_display()
 
-        if self._handle_add_point(event, x, y):
+        if self._handle_add_point(event, x, y_adjusted):
             return
 
     def _handle_pan(self, event, x, y, flags=0):
@@ -221,27 +232,34 @@ class FisheyeCorrector:
         debug_candidates = []
         debug_search_center = (px, py)
 
-        # OFFENSIVE: Use smart border margins and actively penalize image boundary candidates
-        # Don't just avoid - attack the problem by making image boundaries very expensive
+        # PRIORITY: Check the exact click location first, then expand outward
+        # This ensures we prioritize what the user actually clicked on
         border_margin = 3  # Start with small margin, use scoring to handle boundaries
-
-        # OFFENSIVE: Heavily biased search ranges that actively avoid image boundaries
-        # For right walls: search much more to the left where the actual wall-floor boundary is
+        
+        # First, try the exact click location (delta = 0)
+        # Then expand outward in a prioritized order: closest first
+        search_sequence = [0]  # Start with exact click location
+        
+        # Determine search range
         if profile.orientation == "vertical" and profile.wall_side == "right":
-            # Right wall: user clicks left of boundary, so search LEFT (negative delta) much more
-            # This attacks the problem by focusing on where the real boundary actually is
-            search_start = max(-profile.search_radius, -min(80, px - border_margin))  # Search far left
-            search_end = min(profile.search_radius // 3, 15)  # Very limited right search
+            search_start = max(-profile.search_radius, -min(80, px - border_margin))
+            search_end = min(profile.search_radius // 3, 15)
         elif profile.orientation == "vertical" and profile.wall_side == "left":
-            # Left wall: user clicks right of boundary, so search RIGHT (positive delta) much more
-            search_start = max(-profile.search_radius // 3, -15)  # Limited left search
-            search_end = min(profile.search_radius, w - px - border_margin)  # Search far right
+            search_start = max(-profile.search_radius // 3, -15)
+            search_end = min(profile.search_radius, w - px - border_margin)
         else:
-            # For horizontal walls (top/bottom): use full symmetric search
             search_start = -profile.search_radius
             search_end = profile.search_radius
+        
+        # Build search sequence: prioritize closer distances
+        # Add deltas in order: 0, ±1, ±2, ±3, ... (closest first)
+        for distance in range(1, abs(search_end - search_start) + 1):
+            if -distance >= search_start:
+                search_sequence.append(-distance)
+            if distance <= search_end:
+                search_sequence.append(distance)
 
-        for delta in range(search_start, search_end + 1):
+        for delta in search_sequence:
             if profile.orientation == "vertical":
                 # For left/right walls: search horizontally (along X axis) for vertical edges
                 x = px + delta
@@ -254,9 +272,6 @@ class FisheyeCorrector:
                 grad = float(gradient_map[y, x])
                 if grad < profile.grad_threshold:
                     continue
-                if grad > fallback_grad:
-                    fallback_grad = grad
-                    fallback_point = (x, y)
                 wall_lab, floor_lab = self._lab_samples_vertical(x, y, profile.wall_side)
             else:
                 # For top/bottom walls: search vertically (along Y axis) for horizontal edges
@@ -270,13 +285,19 @@ class FisheyeCorrector:
                 grad = float(gradient_map[y, x])
                 if grad < profile.grad_threshold:
                     continue
-                if grad > fallback_grad:
-                    fallback_grad = grad
-                    fallback_point = (x, y)
                 wall_lab, floor_lab = self._lab_samples_horizontal(x, y, profile.wall_side)
 
             if wall_lab is None or floor_lab is None:
                 continue
+            
+            # Check fallback candidate (before full validation) - only if colors look valid
+            wall_L = wall_lab[0]
+            floor_L = floor_lab[0]
+            # Basic validation for fallback: wall should be reasonably light, floor should be light
+            if wall_L >= 15.0 and floor_L >= 50.0:
+                if grad > fallback_grad:
+                    fallback_grad = grad
+                    fallback_point = (x, y)
 
             # More sophisticated color validation - reject image boundaries
             wall_error = self._lab_delta(wall_lab, profile.lab_wall)
@@ -309,13 +330,86 @@ class FisheyeCorrector:
                 })
                 continue
 
-            # Accept if either:
-            # 1. Both colors are reasonably close to references, OR
-            # 2. There's good contrast between the two sides (indicating an edge)
-            # But only if it's not an image boundary
-            color_acceptable = (wall_error <= profile.color_tolerance and floor_error <= profile.color_tolerance) or contrast > 30.0
+            # STRICT VALIDATION: Ensure both sides match their expected colors
+            # This prevents floor smudges from being detected as walls
+            
+            # Wall side must:
+            # 1. Have reasonable lightness (not too dark - walls are brown, not black)
+            # 2. Match expected wall color reasonably well
+            wall_L = wall_lab[0]
+            wall_is_valid = wall_L >= 15.0  # Walls should be reasonably light (brown, not black)
+            wall_is_valid = wall_is_valid and wall_error <= profile.color_tolerance * 1.5  # Allow some tolerance
+            
+            # Floor side must:
+            # 1. Be light (high L value - floor is white/light)
+            # 2. Match expected floor color reasonably well
+            floor_L = floor_lab[0]
+            floor_is_valid = floor_L >= 50.0  # Floor should be light (white/light gray)
+            floor_is_valid = floor_is_valid and floor_error <= profile.color_tolerance * 1.5  # Allow some tolerance
+            
+            # Require BOTH sides to be valid - don't accept based on contrast alone
+            # This ensures we only snap to actual wall-floor boundaries, not floor smudges
+            color_acceptable = wall_is_valid and floor_is_valid
+            
+            # Additional check: ensure there's reasonable contrast (but not required if colors match well)
+            # This helps reject cases where both sides are similar (not an edge)
+            if color_acceptable and contrast < 15.0:
+                # Both sides match but very low contrast - might not be a real edge
+                # Still accept if colors match very well (low error)
+                if wall_error > profile.color_tolerance * 0.8 or floor_error > profile.color_tolerance * 0.8:
+                    color_acceptable = False
 
             if not color_acceptable:
+                # Store debug info for rejected candidates
+                debug_candidates.append({
+                    'point': (x, y),
+                    'score': float('-inf'),
+                    'grad': grad,
+                    'contrast': contrast,
+                    'delta': delta,
+                    'color_acceptable': False,
+                    'wall_is_black': wall_is_black,
+                    'floor_is_black': floor_is_black,
+                    'wall_error': wall_error,
+                    'floor_error': floor_error,
+                    'wall_lab': wall_lab,
+                    'floor_lab': floor_lab,
+                    'wall_L': wall_L,
+                    'floor_L': floor_L,
+                    'wall_is_valid': wall_is_valid,
+                    'floor_is_valid': floor_is_valid,
+                    'rejected': True,
+                    'reject_reason': 'color_validation_failed'
+                })
+                continue
+
+            # WALL LINE VALIDATION: Check if this edge is part of a continuous wall line
+            # Walls have straight-ish edges (with fisheye distortion), so neighbors should also have edges
+            # Isolated smudges won't have consistent edges along the wall direction
+            is_part_of_wall_line = self._verify_wall_line_continuity(x, y, profile, gradient_map, h, w)
+            
+            if not is_part_of_wall_line:
+                # Store debug info for rejected candidates
+                debug_candidates.append({
+                    'point': (x, y),
+                    'score': float('-inf'),
+                    'grad': grad,
+                    'contrast': contrast,
+                    'delta': delta,
+                    'color_acceptable': True,
+                    'wall_is_black': wall_is_black,
+                    'floor_is_black': floor_is_black,
+                    'wall_error': wall_error,
+                    'floor_error': floor_error,
+                    'wall_lab': wall_lab,
+                    'floor_lab': floor_lab,
+                    'wall_L': wall_L,
+                    'floor_L': floor_L,
+                    'wall_is_valid': wall_is_valid,
+                    'floor_is_valid': floor_is_valid,
+                    'rejected': True,
+                    'reject_reason': 'not_part_of_wall_line'
+                })
                 continue
 
             # OFFENSIVE: Add massive penalty for candidates near image boundaries
@@ -347,8 +441,25 @@ class FisheyeCorrector:
             if contrast > 30.0:
                 color_score += contrast * 0.1  # Bonus for high contrast edges
 
+            # PRIORITY: Heavily favor points closer to the click location
+            # This ensures we use what the user actually clicked on, not a smudge 20-50 pixels away
             distance_penalty = self.snap_distance_weight * float(abs(delta))
-            score = grad + color_score * 0.3 - distance_penalty - boundary_penalty
+            # Add a MASSIVE bonus for being close to the click location
+            # This should heavily outweigh any gradient/color advantages of distant points
+            proximity_bonus = 0.0
+            if abs(delta) == 0:
+                proximity_bonus = 1000.0  # Huge bonus for exact click location
+            elif abs(delta) <= 5:
+                proximity_bonus = 800.0   # Very large bonus for very close (within 5px)
+            elif abs(delta) <= 10:
+                proximity_bonus = 500.0  # Large bonus for close (within 10px)
+            elif abs(delta) <= 15:
+                proximity_bonus = 300.0  # Good bonus for reasonably close (within 15px)
+            elif abs(delta) <= 20:
+                proximity_bonus = 150.0  # Moderate bonus for somewhat close (within 20px)
+            # Beyond 20 pixels, no bonus - heavily penalize distant points
+            
+            score = grad + color_score * 0.3 - distance_penalty - boundary_penalty + proximity_bonus
 
             # Store debug info for visualization
             debug_candidates.append({
@@ -386,6 +497,22 @@ class FisheyeCorrector:
             'original_point': (px, py)
         }
 
+        # PRIORITY: If we found a valid point reasonably close to click location, use it immediately
+        # This prevents searching further and finding smudges 20-50 pixels away
+        if best_point is not None:
+            best_delta_x = abs(best_point[0] - px)
+            best_delta_y = abs(best_point[1] - py)
+            if profile.orientation == "vertical":
+                best_delta = best_delta_x
+            else:
+                best_delta = best_delta_y
+            
+            # If best point is reasonably close (within 15 pixels), use it immediately
+            # This ensures we prioritize what the user clicked on, not distant smudges
+            if best_delta <= 15:
+                return best_point
+        
+        # Otherwise, use best point if available, or fallback, or original click
         if best_point is not None:
             return best_point
         if fallback_point is not None:
@@ -401,6 +528,71 @@ class FisheyeCorrector:
         gradient_map = self.snap_gradient_x if profile.orientation == "vertical" else self.snap_gradient_y
         return profile, gradient_map
 
+    def _verify_wall_line_continuity(self, x: int, y: int, profile, gradient_map: np.ndarray, h: int, w: int) -> bool:
+        """Verify that the edge point is part of a continuous wall line.
+        
+        Walls have straight-ish edges (with fisheye distortion), so we check neighbors
+        along the wall direction to see if they also have edges. Isolated smudges won't
+        have consistent edges along the wall line.
+        
+        Args:
+            x, y: Candidate edge point
+            profile: SnapProfile with wall orientation and side
+            gradient_map: Gradient map to check for edges
+            h, w: Image dimensions
+            
+        Returns:
+            True if the point appears to be part of a continuous wall line
+        """
+        # Sample points along the wall direction (perpendicular to the edge)
+        # For vertical walls (left/right): check points above and below
+        # For horizontal walls (top/bottom): check points left and right
+        
+        check_distance = 8  # Pixels away to check
+        num_samples = 5  # Number of points to check on each side
+        min_edge_points = 4  # Minimum number of points that should have edges
+        
+        edge_count = 0
+        total_samples = 0
+        
+        if profile.orientation == "vertical":
+            # For vertical walls: check points above and below (along Y axis)
+            for offset in range(-check_distance * num_samples, check_distance * num_samples + 1, check_distance):
+                if offset == 0:
+                    continue  # Skip the center point (we already know it has an edge)
+                check_y = y + offset
+                if check_y < 0 or check_y >= h:
+                    continue
+                check_x = x
+                total_samples += 1
+                # Check if this point also has a strong edge
+                if check_x >= 0 and check_x < w:
+                    neighbor_grad = float(gradient_map[check_y, check_x])
+                    if neighbor_grad >= profile.grad_threshold * 0.7:  # Slightly lower threshold for neighbors
+                        edge_count += 1
+        else:
+            # For horizontal walls: check points left and right (along X axis)
+            for offset in range(-check_distance * num_samples, check_distance * num_samples + 1, check_distance):
+                if offset == 0:
+                    continue  # Skip the center point
+                check_x = x + offset
+                if check_x < 0 or check_x >= w:
+                    continue
+                check_y = y
+                total_samples += 1
+                # Check if this point also has a strong edge
+                if check_y >= 0 and check_y < h:
+                    neighbor_grad = float(gradient_map[check_y, check_x])
+                    if neighbor_grad >= profile.grad_threshold * 0.7:  # Slightly lower threshold for neighbors
+                        edge_count += 1
+        
+        # Require at least min_edge_points neighbors to have edges
+        # This ensures we're detecting a continuous wall line, not an isolated smudge
+        if total_samples < 4:  # Not enough samples (near image edge)
+            return True  # Allow it if we can't check (near boundaries)
+        
+        return edge_count >= min_edge_points
+    
     @staticmethod
     def _lab_delta(a: np.ndarray, b: np.ndarray) -> float:
         return float(np.linalg.norm(a.astype(np.float32) - b.astype(np.float32)))
@@ -552,7 +744,49 @@ class FisheyeCorrector:
         view = self._apply_viewport(base)
         # Draw a subtle crosshair at the cursor for consistent pointer visuals
         self._draw_crosshair(view)
-        self.display_image = view
+        # Draw header above the image (not overlaying it)
+        view_with_header = self._draw_header_overlay(view)
+        self.display_image = view_with_header
+    
+    def _draw_header_overlay(self, image: np.ndarray) -> np.ndarray:
+        """Draw header above the image (not overlaying it)."""
+        h, w = image.shape[:2]
+        header_height = 80
+        
+        # Create a new image with header space above
+        canvas = np.zeros((h + header_height, w, 3), dtype=np.uint8)
+        
+        # Draw header bar
+        cv2.rectangle(canvas, (0, 0), (w, header_height), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (0, header_height - 1), (w, header_height), (80, 80, 80), 1)
+        
+        # Determine current status
+        status_text = ""
+        instruction_text = ""
+        
+        if self.corrected_image is not None:
+            status_text = "✓ Correction complete! Press 's' to save, ENTER/SPACE to continue, 'q' to quit pipeline"
+        elif self.current_wall_idx < len(self.walls):
+            current_wall = self.walls[self.current_wall_idx]
+            wall_name = current_wall.wall_name
+            point_count = len(current_wall.points)
+            status_text = f"Current: {wall_name.upper()} wall | Points: {point_count} | Click on curved edges"
+            instruction_text = "Press 'n' for next wall | 'c' to correct | ENTER/SPACE when done | 'q' to quit pipeline"
+        else:
+            status_text = "All walls complete! Press 'c' to correct, 's' to save"
+            instruction_text = "ENTER/SPACE to continue | 'q' to quit pipeline"
+        
+        # Draw status text in header
+        cv2.putText(canvas, status_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Draw instruction text if available
+        if instruction_text:
+            cv2.putText(canvas, instruction_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        
+        # Place original image below header
+        canvas[header_height:, :] = image
+        
+        return canvas
 
     def _prepare_base_image(self) -> np.ndarray:
         """Return a copy of the image base with any overlays applied."""
@@ -1092,7 +1326,7 @@ class FisheyeCorrector:
         print(f"  k1={dist_coeffs[0]:.4f}, k2={dist_coeffs[1]:.4f}")
         print(f"  k3={dist_coeffs[2]:.4f}, k4={dist_coeffs[3]:.4f}")
         
-    def run(self):
+    def run(self) -> int:
         """Run the fisheye correction tool"""
         # Prefer Qt viewer (hidden OS cursor) if available
         if _HAVE_QT:
@@ -1141,7 +1375,22 @@ class FisheyeCorrector:
                     ch = chr(key)
                 except Exception:
                     ch = ''
+                # Check for ENTER (13) or SPACEBAR (32) to proceed
+                if key == 13 or key == 32:  # ENTER or SPACEBAR
+                    if self.corrected_image is not None:
+                        # Auto-save if correction is complete
+                        self.save_calibration_and_image()
+                        print("Saved and proceeding to next tool...")
+                        from PyQt5 import QtWidgets
+                        QtWidgets.QApplication.instance().quit()
+                        return 0  # Normal exit - continue pipeline
+                    else:
+                        print("Please complete fisheye correction first (press 'c')")
+                
+                # Check for Q to quit entire pipeline
                 if ch.lower() == 'q':
+                    print("Quitting entire pipeline...")
+                    self._quit_pipeline = True
                     from PyQt5 import QtWidgets
                     QtWidgets.QApplication.instance().quit()
                 elif ch.lower() == 'z':
@@ -1181,7 +1430,12 @@ class FisheyeCorrector:
                         print("✓ Debug visualization DISABLED")
 
             # Start Qt event loop with hidden cursor
-            return qt_run_viewer("Fisheye Correction", frame_provider, on_mouse, on_key, hide_cursor=True)
+            qt_run_viewer("Fisheye Correction", frame_provider, on_mouse, on_key, hide_cursor=True)
+            # Check if user wants to quit pipeline
+            if self._quit_pipeline:
+                return 2  # Special exit code to stop pipeline
+            # Otherwise normal exit (user pressed ENTER/SPACE or saved)
+            return 0
         window_name = "Fisheye Correction"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         
@@ -1222,9 +1476,20 @@ class FisheyeCorrector:
                     print("Window closed - exiting...")
                     break
                 
+                # Check for ENTER (13) or SPACEBAR (32) to proceed to next tool
+                if key == 13 or key == 32:  # ENTER or SPACEBAR
+                    if self.corrected_image is not None:
+                        # Auto-save if correction is complete
+                        self.save_calibration_and_image()
+                        print("Saved and proceeding to next tool...")
+                        return 0  # Normal exit - continue pipeline
+                    else:
+                        print("Please complete fisheye correction first (press 'c')")
+                
+                # Check for Q to quit entire pipeline
                 if self._key_in(key, raw_key, 'q', 'Q'):
-                    print("Quitting...")
-                    break
+                    print("Quitting entire pipeline...")
+                    return 2  # Special exit code to stop pipeline
                 # Handle undo (CTRL+Z, Shift+Z)
                 elif key in (26, ord('z'), ord('Z')):
                     self.undo_last_point()
@@ -1291,12 +1556,18 @@ class FisheyeCorrector:
                 # (save handled earlier to avoid conflict with 's' pan)
                         
         except KeyboardInterrupt:
-            print("\nInterrupted by user - exiting...")
+            print("\nInterrupted by user - exiting pipeline...")
+            cv2.destroyAllWindows()
+            return 2  # Exit pipeline on interrupt
         except Exception as e:
             print(f"Error occurred: {e}")
+            cv2.destroyAllWindows()
+            return 1  # Error exit
         finally:
             cv2.destroyAllWindows()
             print("Application closed.")
+        
+        return 0  # Normal completion
 
 
 def main():
@@ -1306,12 +1577,11 @@ def main():
     
     try:
         corrector = FisheyeCorrector(args.image_path)
-        corrector.run()
+        exit_code = corrector.run()
+        return exit_code if exit_code is not None else 0
     except Exception as e:
         print(f"Error: {e}")
         return 1
-        
-    return 0
 
 
 if __name__ == "__main__":

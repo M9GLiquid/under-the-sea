@@ -1,0 +1,126 @@
+{
+  "source_grids_json": "data/GPS-Real_corrected_rectified_oriented_grids.json",
+  "rectified_image": "output/GPS-Real_corrected_rectified_oriented_grid_12x8.png",
+  "arena_bounds": {
+    "left": 329,
+    "top": 484,
+    "right": 1647,
+    "bottom": 1351
+  },
+  "corner_pixels": {
+    "top_left": [
+      329.0,
+      484.0
+    ],
+    "top_right": [
+      1647.0,
+      484.0
+    ],
+    "bottom_right": [
+      1647.0,
+      1351.0
+    ],
+    "bottom_left": [
+      329.0,
+      1351.0
+    ]
+  },
+  "pixel_spans": {
+    "top": 1318.0,
+    "right": 867.0,
+    "bottom": 1318.0,
+    "left": 867.0,
+    "diag_tl_br": 1577.5972236283885,
+    "diag_tr_bl": 1577.5972236283885
+  },
+  "wall_lengths_mm": {
+    "top": 3628.0,
+    "right": 2408.0,
+    "bottom": 3628.0,
+    "left": 2408.0
+  },
+  "samples": [
+    {
+      "name": "top",
+      "pixel_length": 1318.0,
+      "real_mm": 3628.0,
+      "real_cm": 362.8,
+      "cm_per_pixel": 0.27526555386949925,
+      "pixels_per_cm": 3.6328555678059535
+    },
+    {
+      "name": "right",
+      "pixel_length": 867.0,
+      "real_mm": 2408.0,
+      "real_cm": 240.8,
+      "cm_per_pixel": 0.27773933102652826,
+      "pixels_per_cm": 3.6004983388704317
+    },
+    {
+      "name": "bottom",
+      "pixel_length": 1318.0,
+      "real_mm": 3628.0,
+      "real_cm": 362.8,
+      "cm_per_pixel": 0.27526555386949925,
+      "pixels_per_cm": 3.6328555678059535
+    },
+    {
+      "name": "left",
+      "pixel_length": 867.0,
+      "real_mm": 2408.0,
+      "real_cm": 240.8,
+      "cm_per_pixel": 0.27773933102652826,
+      "pixels_per_cm": 3.6004983388704317
+    },
+    {
+      "name": "diag_tl_br",
+      "pixel_length": 1577.5972236283885,
+      "real_mm": 4354.405585151663,
+      "real_cm": 435.44055851516634,
+      "cm_per_pixel": 0.276015038562046,
+      "pixels_per_cm": 3.6229909979169777
+    },
+    {
+      "name": "diag_tr_bl",
+      "pixel_length": 1577.5972236283885,
+      "real_mm": 4354.405585151663,
+      "real_cm": 435.44055851516634,
+      "cm_per_pixel": 0.276015038562046,
+      "pixels_per_cm": 3.6229909979169777
+    }
+  ],
+  "cm_per_pixel_stats": {
+    "count": 6,
+    "min": 0.27526555386949925,
+    "max": 0.27773933102652826,
+    "mean": 0.2763399744860245,
+    "stddev": 0.0010357222509529127
+  },
+  "pixels_per_cm_stats": {
+    "count": 6,
+    "min": 3.6004983388704317,
+    "max": 3.6328555678059535,
+    "mean": 3.6187816348644546,
+    "stddev": 0.013540965477084825
+  },
+  "recorded_at_utc": "2025-10-13T12:29:57+00:00",
+  "real_lengths_mm": {
+    "top": 3628.0,
+    "right": 2408.0,
+    "bottom": 3628.0,
+    "left": 2408.0,
+    "diag_tl_br": 4354.405585151663,
+    "diag_tr_bl": 4354.405585151663
+  },
+  "axis_mm_per_pixel": {
+    "x": 2.7526555386949925,
+    "y": 2.777393310265283
+  },
+  "axis_cm_per_pixel": {
+    "x": 0.27526555386949925,
+    "y": 0.27773933102652826
+  },
+  "assumptions": {
+    "diagonals": "Diagonal lengths derived from mean horizontal/vertical wall lengths"
+  }
+}

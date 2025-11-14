@@ -1,0 +1,19 @@
+{
+  "source_image": "/home/thomas/Dev/Python/Mermaid/output/GPS-Real_corrected_rectified_oriented.png",
+  "arena_bounds": {
+    "left": 241,
+    "top": 448,
+    "right": 2489,
+    "bottom": 1944
+  },
+  "transform_json": "data/GPS-Real_corrected_transform.json",
+  "current_grid": {
+    "cols": 47,
+    "rows": 31,
+    "cell_size_px": {
+      "x": 48,
+      "y": 48
+    }
+  },
+  "image": "output/GPS-Real_corrected_rectified_oriented_grid_47x31.png"
+}

@@ -10,7 +10,7 @@ Transforms GPS server coordinates (2048x1536) to:
 This is a standalone API that can be exported and used independently.
 
 Usage:
-    from gps_overlay import GPSOverlay
+    from overlay import GPSOverlay
     overlay = GPSOverlay("gps_overlay.json")
 
     # Transform GPS coordinates
@@ -58,13 +58,6 @@ class GPSOverlay:
         with open(json_path, 'r', encoding='utf-8') as f:
             self.data = json.load(f)["gps_overlay"]
 
-        # ===== Camera Parameters =====
-        # These are used for fisheye distortion correction
-        # The camera_matrix contains focal length and principal point
-        # The distortion_coeffs contain k1, k2, k3, k4 fisheye distortion coefficients
-        self.camera_matrix = self.data["camera_matrix"]
-        self.dist_coeffs = self.data["distortion_coeffs"]
-        
         # Image sizes:
         # - calib_size: Original calibration image size (e.g., 1206x906)
         # - server_size: GPS server image size (typically 2048x1536)
@@ -96,16 +89,13 @@ class GPSOverlay:
         # Optional: Converts pixels to millimeters (only if Tool 6 was run)
         # - mm_per_pixel_x: Millimeters per pixel in X direction
         # - mm_per_pixel_y: Millimeters per pixel in Y direction
-        # - origin_mm: Origin point in millimeters (typically {"x": 0, "y": 0})
         self.real_world_available = "real_world" in self.data
         if self.real_world_available:
             self.mm_per_pixel_x = self.data["real_world"]["mm_per_pixel_x"]
             self.mm_per_pixel_y = self.data["real_world"]["mm_per_pixel_y"]
-            self.origin_mm = self.data["real_world"]["origin_mm"]
         else:
             # Real-world calibration not available - set to None
             self.mm_per_pixel_x = self.mm_per_pixel_y = None
-            self.origin_mm = {"x": 0, "y": 0}
 
     def map_coords(self, x: float, y: float) -> Tuple[float, float]:
         """
@@ -348,58 +338,3 @@ class GPSOverlay:
             grid_map.append(grid_row)
 
         return grid_map
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    try:
-        # Load the API
-        overlay = GPSOverlay()
-
-        print("GPSOverlay API - Standalone Test")
-        print("=" * 40)
-
-        # Test with sample GPS coordinates (like from your server)
-        test_coords = [
-            (50, 50),     # Top-left area
-            (1024, 768),  # Center area
-            (2000, 1500)  # Bottom-right area
-        ]
-
-        for gps_x, gps_y in test_coords:
-            print(f"\nGPS Server ({gps_x}, {gps_y}):")
-
-            # Get rectified coordinates
-            x_rect, y_rect = overlay.map_coords(gps_x, gps_y)
-            print(f"  -> Rectified: ({x_rect:.1f}, {y_rect:.1f})")
-
-            # Get grid cell
-            cell = overlay.get_grid_cell(gps_x, gps_y)
-            print(f"  -> Grid Cell: {cell['col']}, {cell['row']} (in bounds: {cell['in_bounds']})")
-
-            # Get real-world coordinates (if available)
-            if overlay.real_world_available:
-                real_pos = overlay.get_real_coords(gps_x, gps_y)
-                print(f"  -> Real World: {real_pos['x_mm']:.1f}mm, {real_pos['y_mm']:.1f}mm")
-            else:
-                print("  -> Real World: Not available (run Tool 6 first)")
-        # Show grid info
-        print("\nGrid Configuration:")
-        print(f"  Size: {overlay.grid_cols}x{overlay.grid_rows} cells")
-        print(f"  Cell Size: {overlay.cell_size_px['x']}x{overlay.cell_size_px['y']} pixels")
-        print(f"  Arena: {overlay.arena_bounds}")
-
-        if overlay.real_world_available:
-            print(f"  Real-World: {overlay.mm_per_pixel_x:.3f} mm/pixel")
-        else:
-            print("  Real-World: Not calibrated")
-
-        print("\n[SUCCESS] GPSOverlay API ready for use!")
-        print("Copy gps_overlay.py and gps_overlay.json to your project.")
-
-    except FileNotFoundError:
-        print("[ERROR] gps_overlay.json not found!")
-        print("Run Tool 8 first: python tools/Tool_8_GPS_Overlay.py")
-    except Exception as e:
-        print(f"[ERROR] {e}")
-        print("Make sure gps_overlay.json contains valid calibration data.")

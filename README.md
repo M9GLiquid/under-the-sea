@@ -5,11 +5,24 @@ A comprehensive Python toolkit for processing fisheye images of underwater arena
 ## Project Structure
 
 ```
+├── main.py                 # Unified pipeline - run all tools sequentially
 ├── tools/                  # Processing tools (Tool 1-8)
+│   ├── Tool_1_Fix_Fisheye.py
+│   ├── Tool_2_Detect_Arena_Corners.py
+│   ├── Tool_3_Rectify_Arena_Square.py
+│   ├── Tool_4_Grid_Overlay.py
+│   ├── Tool_5_Grid_Inspector.py
+│   ├── Tool_6_Real_World_Calibrator.py
+│   ├── Tool_7_Point_Mapper.py
+│   ├── Tool_8_GPS_Overlay.py
+│   └── axis_test.py        # Axis camera snapshot tool
 ├── src/                    # Programmatic APIs and shared utilities
+│   └── tools/
+│       ├── gps_api.py      # GPSMapper API
+│       └── gps_overlay.py  # Standalone GPSOverlay API
 ├── data/                   # JSON data files (calibrations, transforms, grids)
 ├── output/                 # Processed images
-├── images/                 # Input images
+├── images/                 # Input images (GPS-Real.png)
 ├── tests/                  # Test files and validation scripts
 ├── requirements.txt        # Python dependencies
 └── README.md              # This file
@@ -21,6 +34,50 @@ A comprehensive Python toolkit for processing fisheye images of underwater arena
 ```bash
 pip install -r requirements.txt
 ```
+
+**Note:** If you're on Ubuntu/XUbuntu with Python 3.12+, you may need to use a virtual environment:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Quick Start: Unified Pipeline
+
+The easiest way to process images is using the unified pipeline that runs all tools sequentially:
+
+```bash
+# Run all tools (default)
+python main.py
+
+# Run specific tools
+python main.py --tool 1,2,3
+
+# Run a range of tools
+python main.py --tool 1-4
+
+# Run combination (individual + range)
+python main.py --tool 1,3-5,7
+
+# Run single tool
+python main.py --tool 6
+```
+
+**Workflow:**
+1. Place your image at `images/GPS-Real.png` (or fetch from Axis camera using `python tools/axis_test.py`)
+2. Run `python main.py` - it will run Tools 1-8 sequentially
+3. For each interactive tool: complete your work → press 's' to save → press 'q' to quit
+4. The next tool starts automatically after you quit
+
+**Tool Selection:**
+- Default: Runs all tools (1-8)
+- `--tool` argument supports:
+  - Individual tools: `1,2,3`
+  - Ranges: `1-4`
+  - Combinations: `1,3-5,7`
+  - All: `all` or omit the argument
+
+---
 
 ## Complete Processing Pipeline
 
@@ -169,22 +226,23 @@ python tools/Tool_5_Grid_Inspector.py output/GPS-Real_grid.png
 ---
 
 ### Tool 6: Real-World Calibrator (`tools/Tool_6_Real_World_Calibrator.py`)
-**Purpose:** Convert rectified grid pixels into real-world centimetres using Tool 5 corner data.
+**Purpose:** Convert rectified grid pixels into real-world millimetres.
 
 **Usage:**
 ```bash
-python tools/Tool_6_Real_World_Calibrator.py data/GPS-Real_corrected_rectified_oriented_grid_{cols}x{rows}.json
+python tools/Tool_6_Real_World_Calibrator.py data/GPS-Real_corrected_rectified_oriented_grid.json
 ```
 
 **Process:**
-1. Loads individual grid settings and derives rectified arena corners
+1. Loads grid settings and derives rectified arena corners
 2. Calculates pixel spans for each wall and both diagonals
-3. Guides you through four corner-to-corner wall measurements (TL→TR, TR→BR, BR→BL, BL→TL) in millimetres
-4. Computes cm↔px ratios, prints summary stats, and (optionally) opens the rectified image while streaming the Top-Left→cursor distance in millimetres to the terminal
-5. After inspection, prompts you to press `s` to write the calibration JSON (anything else cancels)
+3. Prompts for two inputs in millimetres: Height (BL↔TL and BR↔TR) and Width (TL↔TR and BL↔BR)
+4. Computes mm↔px ratios and prints summary stats
+5. Optionally opens the rectified image while streaming Top-Left→cursor distance in millimetres
+6. Press `s` to save the calibration JSON
 
 **Outputs:**
-- `data/GPS-Real_corrected_rectified_oriented_calibration.json` – Pixel↔cm conversion stats, user-supplied wall lengths, derived diagonals, and assumptions
+- `data/GPS-Real_corrected_rectified_oriented_calibration.json` – Pixel↔mm conversion stats, user-supplied wall lengths, derived diagonals
 
 ---
 
@@ -217,12 +275,12 @@ python tools/Tool_7_Point_Mapper.py --auto-detect-size
 
 ---
 
-### Tool 8: GPSOverlay API Creator (`tools/Tool_8_GPS_Overlay.py`)
+### Tool 8: GPS Overlay API Creator (`tools/Tool_8_GPS_Overlay.py`)
 **Purpose:** Consolidates all calibration data into a single standalone JSON file for production API usage.
 
 **Usage:**
 ```bash
-# Create standalone API package
+# Create standalone API package (auto-detects all required files)
 python tools/Tool_8_GPS_Overlay.py
 
 # Custom output location
@@ -234,7 +292,7 @@ python tools/Tool_8_GPS_Overlay.py --calibration-json data/GPS-Real_corrected_re
 
 **Process:**
 1. Loads fisheye calibration data from existing JSON files
-2. Dynamically detects grid configuration (uses first/selected grid)
+2. Dynamically detects grid configuration from Tool 4 output
 3. Includes real-world calibration if available (from Tool 6)
 4. Creates single `gps_overlay.json` file for standalone API usage
 
@@ -243,47 +301,37 @@ python tools/Tool_8_GPS_Overlay.py --calibration-json data/GPS-Real_corrected_re
 - Ready for export to production systems
 
 **Notes:**
-- Run after completing Tools 1-7
+- Run after completing Tools 1-7 (or use unified pipeline)
 - For real-world coordinates, run Tool 6 first to generate calibration data
 - Output file is completely self-contained for standalone API usage
-- Tool 4 now uses simple naming: `GPS-Real_grid.json` (no grid size in filename)
 - Grid size is detected dynamically from the saved configuration
-- No legacy filename parsing - all configuration stored in JSON files
 
 ---
 
-## Standalone GPSOverlay API
+## Fetching Images from Axis Camera
 
-For production use, export the standalone API package created by Tool 8.
+To fetch a fresh image from an Axis P1346 camera:
 
-### Export and Usage
-**Files to Export:**
-- `src/tools/gps_overlay.py` - Standalone API code
-- `data/gps_overlay.json` - Calibration data (created by Tool 8)
-
-**Integration:**
-```python
-# In your application code
-from gps_overlay import GPSOverlay
-
-# Initialize API
-overlay = GPSOverlay("gps_overlay.json")
-
-# Transform GPS server coordinates
-x_rect, y_rect = overlay.map_coords(50, 50)  # GPS → rectified
-
-cell = overlay.get_grid_cell(50, 50)  # GPS → grid cell
-# {"col": 12, "row": 8, "in_bounds": True}
-
-real_pos = overlay.get_real_coords(50, 50)  # GPS → real-world mm
-# {"x_mm": 1250.5, "y_mm": 890.2, "distance_from_origin_mm": 1523.1}
+```bash
+# Fetch and save to images/GPS-Real.png
+python tools/axis_test.py
 ```
 
-**Features:**
-- **Simple functions:** `map_coords()`, `get_grid_cell()`, `get_real_coords()`, `get_grid_map()`
-- **No dependencies:** Uses only built-in Python libraries
-- **Real-world support:** Millimeter coordinates when calibrated
-- **Grid mapping:** Complete 45×29 grid array for navigation
+Or use programmatically:
+```python
+from tools.axis_test import fetch_axis_snapshot
+
+# Fetch and save to default location (images/GPS-Real.png)
+img = fetch_axis_snapshot()
+
+# Or specify custom output path
+img = fetch_axis_snapshot("images/my_snapshot.png")
+```
+
+**Configuration:** Edit the hardcoded values in `tools/axis_test.py`:
+- `CAMERA_IP` - Your camera IP address
+- `USERNAME` - Camera username
+- `PASSWORD` - Camera password
 
 ---
 
@@ -331,133 +379,86 @@ Notes:
 - The scale factor (0.8) matches Tool 1's corrected camera matrix; keep them in sync.
 
 
-## Complete Workflow Example
+## Complete Workflow Examples
 
-### Manual Step-by-Step Processing
+### Option 1: Unified Pipeline (Recommended)
 ```bash
-# 1. Correct fisheye distortion
-python3 tools/Tool_1_Fix_Fisheye.py /home/thomas/Dev/Python/Mermaid/images/GPS-Real.png
+# Fetch fresh image from camera (optional)
+python tools/axis_test.py
 
-# 2. Detect arena corners
-python3 tools/Tool_2_Detect_Arena_Corners.py /home/thomas/Dev/Python/Mermaid/output/GPS-Real_corrected.png
+# Run all tools sequentially
+python main.py
 
-# 3. Rectify to top-down view (prefer JSON)
-python3 tools/Tool_3_Rectify_Arena_Square.py /home/thomas/Dev/Python/Mermaid/data/GPS-Real_corrected_corners.json
+# Or run specific tools
+python main.py --tool 1-4        # Run tools 1 through 4
+python main.py --tool 1,3,5      # Run tools 1, 3, and 5
+python main.py --tool 6          # Run only tool 6
+```
 
-# 4. Create coordinate grids
+### Option 2: Manual Step-by-Step Processing
+```bash
+# 1. Fetch image from camera (optional)
+python tools/axis_test.py
+
+# 2. Correct fisheye distortion
+python tools/Tool_1_Fix_Fisheye.py images/GPS-Real.png
+
+# 3. Detect arena corners
+python tools/Tool_2_Detect_Arena_Corners.py output/GPS-Real_corrected.png
+
+# 4. Rectify to top-down view
+python tools/Tool_3_Rectify_Arena_Square.py data/GPS-Real_corrected_corners.json
+
+# 5. Create coordinate grids
 python tools/Tool_4_Grid_Overlay.py output/GPS-Real_corrected_rectified_oriented.png
 
-# 5. Inspect grid cells
-python tools/Tool_5_Grid_Inspector.py output/GPS-Real_grid.png
+# 6. Inspect grid cells (optional)
+python tools/Tool_5_Grid_Inspector.py output/GPS-Real_corrected_rectified_oriented_grid_*.png
 
-# 6. Calibrate real-world measurements
-python tools/Tool_6_Real_World_Calibrator.py data/GPS-Real_grid.json
+# 7. Calibrate real-world measurements
+python tools/Tool_6_Real_World_Calibrator.py data/GPS-Real_corrected_rectified_oriented_grid.json
 
-# 7. Create standalone API package
-python tools/Tool_8_GPS_Overlay.py --output data/gps_overlay.json
+# 8. Point mapper viewer (optional)
+python tools/Tool_7_Point_Mapper.py
+
+# 9. Create standalone API package
+python tools/Tool_8_GPS_Overlay.py
 ```
+
+---
 
 ## Standalone GPSOverlay API
 
-For production use, Tool 8 creates a standalone API package that can be exported and used independently of the full toolkit.
+For production use, Tool 8 creates a standalone API package that can be exported and used independently.
 
-### Tool 8: GPSOverlay API Creator (`tools/Tool_8_GPS_Overlay.py`)
-**Purpose:** Consolidates all calibration data into a single JSON file for standalone API usage.
-
-**Usage:**
-```bash
-# Create standalone API package
-python tools/Tool_8_GPS_Overlay.py
-
-# Custom output location
-python tools/Tool_8_GPS_Overlay.py --output path/to/gps_overlay.json
-```
-
-**Process:**
-1. Loads fisheye calibration data from existing JSON files
-2. Extracts 45×29 grid configuration
-3. Includes real-world calibration if available (from Tool 6)
-4. Creates single `gps_overlay.json` file for API usage
-
-**Output:**
-- `gps_overlay.json` - Complete calibration data in single file
-
-### GPSOverlay API (`src/tools/gps_overlay.py`)
-**Purpose:** Standalone Python API for GPS coordinate transformations. Can be exported and used independently.
-
-**Features:**
-- **Simple functions:** `map_coords()`, `get_grid_cell()`, `get_real_coords()`, `get_grid_map()`
-- **No dependencies:** Uses only built-in Python libraries
-- **Single JSON file:** All calibration data in one file
-- **Dynamic grid detection:** Automatically uses grid size from Tool 4
-- **Real-world support:** Millimeter coordinates when calibrated
-
-**Usage:**
-```python
-from gps_overlay import GPSOverlay
-
-# Load calibration data
-overlay = GPSOverlay("gps_overlay.json")
-
-# Transform GPS server coordinates (2048×1536)
-x_rect, y_rect = overlay.map_coords(50, 50)  # → rectified coordinates
-
-cell = overlay.get_grid_cell(50, 50)  # → grid cell info
-# {"col": 4, "row": 2, "in_bounds": True, "center_x": 450.5, "center_y": 320.2}
-
-real_pos = overlay.get_real_coords(50, 50)  # → real-world mm (if calibrated)
-# {"x_mm": 1250.5, "y_mm": 890.2, "distance_from_origin_mm": 1523.1}
-
-# Get complete grid mapping (size from Tool 4)
-grid_map = overlay.get_grid_map()  # Array of all grid cells (e.g., 14×9)
-```
-
-**Export for Standalone Use:**
-1. Copy `src/tools/gps_overlay.py` and `data/gps_overlay.json` to your project
-2. Import and use: `from gps_overlay import GPSOverlay`
-3. No additional dependencies required
-
-**Testing:**
-```bash
-# Run standalone tests (requires test files)
-python tests/test_gps_overlay_standalone.py
-
-# Or run the built-in API test
-python src/tools/gps_overlay.py
-```
+### Export and Usage
+**Files to Export:**
+- `src/tools/gps_overlay.py` - Standalone API code
+- `data/gps_overlay.json` - Calibration data (created by Tool 8)
 
 **Integration:**
 ```python
 # In your application code
 from gps_overlay import GPSOverlay
 
-# Initialize once
-overlay = GPSOverlay()
+# Initialize API
+overlay = GPSOverlay("gps_overlay.json")
 
-# Transform coordinates as needed
-for gps_point in gps_stream:
-    cell = overlay.get_grid_cell(gps_point.x, gps_point.y)
-    if cell["in_bounds"]:
-        handle_grid_cell(cell["col"], cell["row"])
+# Transform GPS server coordinates
+x_rect, y_rect = overlay.map_coords(50, 50)  # GPS → rectified
+
+cell = overlay.get_grid_cell(50, 50)  # GPS → grid cell
+# {"col": 12, "row": 8, "in_bounds": True}
+
+real_pos = overlay.get_real_coords(50, 50)  # GPS → real-world mm
+# {"x_mm": 1250.5, "y_mm": 890.2, "distance_from_origin_mm": 1523.1}
 ```
 
-### Automated Pipeline (Planned)
-A unified pipeline in `main.py` will run all tools sequentially, allowing you to process an image from start to finish with a single command:
-
-```bash
-# Process entire pipeline automatically
-python main.py images/GPS-Real.png
-
-# With optional parameters
-python main.py images/GPS-Real.png --output-dir ./results
-```
-
-This automated pipeline will:
-- Run Tools 1-8 in sequence
-- Handle intermediate file naming automatically
-- Provide progress feedback
-- Allow customization of grid parameters
-- Generate a complete processing report including standalone API package
+**Features:**
+- **Simple functions:** `map_coords()`, `get_grid_cell()`, `get_real_coords()`, `get_grid_map()`
+- **No dependencies:** Uses only built-in Python libraries
+- **Real-world support:** Millimeter coordinates when calibrated
+- **Grid mapping:** Complete grid array for navigation (size from Tool 4)
 
 ## Key Features
 

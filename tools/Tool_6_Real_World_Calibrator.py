@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Tuple
 
 import cv2
+import numpy as np
 
 # Ensure project root is on the import path so we can access src.calibration
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -76,36 +77,47 @@ def derive_output_path(grid_path: Path) -> Path:
     return PROJECT_ROOT / "data" / calibration_name
 
 
-def prompt_wall_lengths() -> Dict[str, float]:
-    print("\nWhich wall am I measuring?")
-    print("We'll start at the top-left corner and move clockwise around the arena.")
-    print("Type each length in millimetres and press ENTER to move on.\n")
+def load_wall_lengths_from_calibration(grid_path: Path) -> Dict[str, float] | None:
+    """Try to load wall lengths from an existing calibration file."""
+    # Try to find existing calibration file
+    base = grid_path.stem
+    import re
+    base = re.sub(r"_grid_\d+x\d+$", "", base)
+    calibration_path = PROJECT_ROOT / "data" / f"{base}_calibration.json"
+    
+    if calibration_path.exists():
+        try:
+            with open(calibration_path, 'r') as f:
+                cal_data = json.load(f)
+            wall_lengths = cal_data.get("wall_lengths_mm")
+            if wall_lengths and all(k in wall_lengths for k in ["top", "right", "bottom", "left"]):
+                print(f"✓ Loaded wall lengths from existing calibration: {calibration_path.name}")
+                return wall_lengths
+        except Exception as e:
+            print(f"Warning: Could not load wall lengths from {calibration_path.name}: {e}")
+    
+    return None
 
-    prompts = [
-        ("top", "TL - TR length [mm]"),
-        ("right", "TR - BR length [mm]"),
-        ("bottom", "BR - BL length [mm]"),
-        ("left", "BL - TL length [mm]"),
-    ]
 
-    measurements: Dict[str, float] = {}
-    for key, label in prompts:
-        while True:
-            raw = input(f"{label}: ").strip()
-            if not raw:
-                print("Please enter a value before continuing.")
-                continue
-            try:
-                value = float(raw)
-            except ValueError:
-                print("Please enter a numeric value (millimetres).")
-                continue
-            if value <= 0:
-                print("Value must be greater than zero.")
-                continue
-            measurements[key] = value
-            break
-    return measurements
+def get_wall_lengths(grid_path: Path) -> Dict[str, float]:
+    """Get wall lengths - try to load from existing calibration, otherwise use standard values."""
+    # Try to load from existing calibration file
+    wall_lengths = load_wall_lengths_from_calibration(grid_path)
+    
+    if wall_lengths:
+        return wall_lengths
+    
+    # Use standard wall lengths (these are always the same)
+    print("Using standard wall lengths:")
+    standard_lengths = {
+        "top": 3628.0,
+        "right": 2408.0,
+        "bottom": 3628.0,
+        "left": 2408.0
+    }
+    for key, value in standard_lengths.items():
+        print(f"  {key:>6}: {value:.1f} mm")
+    return standard_lengths
 
 
 def run_viewer(
@@ -113,11 +125,11 @@ def run_viewer(
     origin: Tuple[float, float],
     mm_per_pixel_x: float,
     mm_per_pixel_y: float,
-) -> None:
+) -> int:
     img = cv2.imread(str(image_path))
     if img is None:
         print(f"Warning: unable to load image for viewer: {image_path}")
-        return
+        return 0  # Continue without viewer
 
     window = "Tool 6 - Calibration Viewer"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
@@ -127,11 +139,41 @@ def run_viewer(
 
     def on_mouse(event, mx, my, _flags, _param):
         if event == cv2.EVENT_MOUSEMOVE:
-            cursor[0] = mx
-            cursor[1] = my
+            # Adjust for header offset (header is 80px tall)
+            header_height = 80
+            if my >= header_height:
+                cursor[0] = mx
+                cursor[1] = my - header_height
+            # Mouse in header area, don't update cursor position
 
     cv2.setMouseCallback(window, on_mouse)
-    print("Move the cursor to inspect TL->cursor distance (press 'q' to close).")
+    print("Move the cursor to inspect TL->cursor distance (press ENTER/SPACE to continue, 'q' to quit pipeline).")
+    
+    def draw_header_overlay(display_img: np.ndarray) -> np.ndarray:
+        """Draw header above the image (not overlaying it)."""
+        h_img, w_img = display_img.shape[:2]
+        header_height = 80
+        
+        # Create a new image with header space above
+        canvas = np.zeros((h_img + header_height, w_img, 3), dtype=np.uint8)
+        
+        # Draw header bar
+        cv2.rectangle(canvas, (0, 0), (w_img, header_height), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (0, header_height - 1), (w_img, header_height), (80, 80, 80), 1)
+        
+        # Status text
+        status_text = "Real-World Calibration Viewer | Move cursor to see distance in mm"
+        instruction_text = "ENTER/SPACE to continue | 'q' to quit pipeline"
+        
+        # Draw status text in header
+        cv2.putText(canvas, status_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(canvas, instruction_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        
+        # Place original image below header
+        canvas[header_height:, :] = display_img
+        
+        return canvas
+    
     while True:
         if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
             break
@@ -141,16 +183,29 @@ def run_viewer(
         cv2.circle(display, origin_point, 5, (0, 0, 255), 2, cv2.LINE_AA)
         cv2.circle(display, cursor_point, 5, (255, 0, 0), 1, cv2.LINE_AA)
         cv2.line(display, origin_point, cursor_point, (0, 255, 0), 1, cv2.LINE_AA)
-        cv2.imshow(window, display)
+        # Draw header above the image (not overlaying it)
+        display_with_header = draw_header_overlay(display)
+        cv2.imshow(window, display_with_header)
         key = cv2.waitKey(16) & 0xFF
         dx_px = cursor_point[0] - origin_point[0]
         dy_px = cursor_point[1] - origin_point[1]
         distance_mm = math.hypot(dx_px * mm_per_pixel_x, dy_px * mm_per_pixel_y)
         print(f"\rTL corner -> cursor: {distance_mm:8.2f} mm", end="", flush=True)
-        if key == ord("q"):
+        
+        # Check for ENTER (13) or SPACEBAR (32) to proceed
+        if key == 13 or key == 32:  # ENTER or SPACEBAR
+            print()
             break
+        
+        # Check for Q to quit entire pipeline
+        if key == ord("q"):
+            print()
+            cv2.destroyWindow(window)
+            return 2  # Special exit code to stop pipeline
+    
     print()
     cv2.destroyWindow(window)
+    return 0  # Normal completion
 
 
 
@@ -198,7 +253,9 @@ def main() -> int:
     for name, length in pixel_spans.items():
         print(f"  {name:>12}: {length:.3f} px")
 
-    wall_lengths_mm = prompt_wall_lengths()
+    print("\n" + "="*60)
+    wall_lengths_mm = get_wall_lengths(grid_path)
+    print("="*60)
     real_lengths_mm = compute_real_lengths(wall_lengths_mm)
     samples = generate_ratio_samples(pixel_spans, real_lengths_mm)
 
@@ -252,17 +309,12 @@ def main() -> int:
         f"\n  Vertical  : {mm_per_pixel_y:0.3f} mm/px ({mm_per_pixel_y/10.0:0.3f} cm/px)"
     )
 
-    if rectified_view is not None:
-        run_viewer(rectified_view, corners["top_left"], mm_per_pixel_x, mm_per_pixel_y)
-
-    confirm = input("\nPress 's' to save the calibration file, or any other key to cancel: ").strip().lower()
-    if confirm != "s":
-        print("Calibration not saved.")
-        return 0
-
+    # Auto-save calibration (no viewer, no prompt)
+    print("\n✓ Calibration computed successfully")
+    
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
-    print(f"Calibration data saved to {output_path}")
+    print(f"✓ Calibration data saved to {output_path}")
     print("Done.")
     return 0
 

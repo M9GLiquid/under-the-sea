@@ -73,6 +73,16 @@ class ArenaCornerDetector:
         
     def mouse_callback(self, event, x, y, flags, param):
         """Handle mouse events: left-click mark, middle-drag pan, wheel zoom"""
+        # Adjust for header offset (header is 80px tall)
+        header_height = 80
+        if y < header_height:
+            # Mouse is in header area, ignore clicks but allow cursor tracking
+            if event == cv2.EVENT_MOUSEMOVE:
+                self.cursor_pos = (x, y)
+            return
+        # Adjust y coordinate to account for header
+        y_adjusted = y - header_height
+        
         cursor_events = (
             cv2.EVENT_MOUSEMOVE,
             cv2.EVENT_LBUTTONDOWN,
@@ -84,7 +94,7 @@ class ArenaCornerDetector:
             cursor_events += (wheel_event,)
         if event in cursor_events:
             self.cursor_pos = (x, y)
-            bx, by = self._screen_to_base_xy(x, y)
+            bx, by = self._screen_to_base_xy(x, y_adjusted)
             if bx is not None and by is not None:
                 self.cursor_base_xy = (bx, by)
             if event == cv2.EVENT_MOUSEMOVE:
@@ -140,7 +150,7 @@ class ArenaCornerDetector:
         
         # Left click to mark point (map through viewport)
         if event == cv2.EVENT_LBUTTONDOWN:
-            bx, by = self._screen_to_base_xy(x, y)
+            bx, by = self._screen_to_base_xy(x, y_adjusted)
             if bx is None:
                 return
             self.mark_wall_point(int(bx), int(by))
@@ -372,7 +382,49 @@ class ArenaCornerDetector:
         # Apply viewport to base image and draw a crosshair at cursor
         view = self._apply_viewport(base)
         self._draw_crosshair(view)
-        self.display_image = view
+        # Draw header above the image (not overlaying it)
+        view_with_header = self._draw_header_overlay(view)
+        self.display_image = view_with_header
+    
+    def _draw_header_overlay(self, image: np.ndarray) -> np.ndarray:
+        """Draw header above the image (not overlaying it)."""
+        h, w = image.shape[:2]
+        header_height = 80
+        
+        # Create a new image with header space above
+        canvas = np.zeros((h + header_height, w, 3), dtype=np.uint8)
+        
+        # Draw header bar
+        cv2.rectangle(canvas, (0, 0), (w, header_height), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (0, header_height - 1), (w, header_height), (80, 80, 80), 1)
+        
+        # Determine current status
+        status_text = ""
+        instruction_text = ""
+        
+        if len(self.detected_corners) == 4:
+            status_text = "✓ All 4 corners detected! Press 's' to save, ENTER/SPACE to continue, 'q' to quit pipeline"
+        elif self.current_wall_index < len(self.wall_sequence):
+            current_wall = self.wall_sequence[self.current_wall_index]
+            wall_points = self.wall_points.get(current_wall, [])
+            point_count = len(wall_points)
+            status_text = f"Current: {current_wall.upper()} wall | Points: {point_count}/2 | Mark 2 points per wall"
+            instruction_text = "Press 'n' for next wall | 's' to save | ENTER/SPACE when done | 'q' to quit pipeline"
+        else:
+            status_text = "All walls marked! Press 's' to save corners"
+            instruction_text = "ENTER/SPACE to continue | 'q' to quit pipeline"
+        
+        # Draw status text in header
+        cv2.putText(canvas, status_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Draw instruction text if available
+        if instruction_text:
+            cv2.putText(canvas, instruction_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        
+        # Place original image below header
+        canvas[header_height:, :] = image
+        
+        return canvas
 
     # -------------------- Viewport helpers --------------------
     def _apply_viewport(self, image: np.ndarray) -> np.ndarray:
@@ -598,7 +650,7 @@ class ArenaCornerDetector:
         print("\nNext step:")
         print(f"  Use rotation correction tool with: {corner_data_path}")
         
-    def run(self):
+    def run(self) -> int:
         """Run the arena corner detection tool"""
         if _HAVE_QT:
             print("Arena Corner Detection (Qt)")
@@ -692,9 +744,20 @@ class ArenaCornerDetector:
                     print("Window closed - exiting...")
                     break
                 
+                # Check for ENTER (13) or SPACEBAR (32) to proceed to next tool
+                if key == 13 or key == 32:  # ENTER or SPACEBAR
+                    if len(self.detected_corners) == 4:
+                        # Auto-save if corners are detected
+                        self.save_corner_data()
+                        print("Saved and proceeding to next tool...")
+                        return 0  # Normal exit - continue pipeline
+                    else:
+                        print("Please mark all 4 corners first (mark 2 points per wall)")
+                
+                # Check for Q to quit entire pipeline
                 if key == ord('q'):
-                    print("Quitting...")
-                    break
+                    print("Quitting entire pipeline...")
+                    return 2  # Special exit code to stop pipeline
                 elif key == ord('n'):
                     # Advance to next wall
                     self.advance_to_next_wall()
@@ -742,12 +805,11 @@ def main():
     
     try:
         detector = ArenaCornerDetector(args.image_path)
-        detector.run()
+        exit_code = detector.run()
+        return exit_code if exit_code is not None else 0
     except Exception as e:
         print(f"Error: {e}")
         return 1
-        
-    return 0
 
 
 if __name__ == "__main__":

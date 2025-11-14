@@ -155,16 +155,30 @@ def run(image_path: str) -> int:
         span_x = max(1, right - left)
         span_y = max(1, bottom - top)
 
-    # Base grid density: aim ~5 cells along the smaller axis, respect min cell size (>=8px)
-    MIN_CELL_PX = 8
+    # Base grid density: aim ~5 cells along the smaller axis, respect min cell size (>=4px)
+    MIN_CELL_PX = 4  # Reduced from 8 to allow smaller cells
     small_span = min(span_x, span_y)
     max_small_cells = max(2, small_span // MIN_CELL_PX)
     base_small_cells = min(5, max_small_cells)
-    offset = 0  # steps from base, limited to [-4, +4]
+    offset = 0  # steps from base, no upper/lower limit (can go as small/large as needed)
 
     def compute_counts(current_offset: int) -> Tuple[int, int, int]:
         # number of cells along smaller dimension
-        cells_small = max(2, min(max_small_cells, base_small_cells + current_offset))
+        # Allow going beyond max_small_cells when offset is negative (making smaller cells)
+        # But ensure we don't go below MIN_CELL_PX
+        proposed_cells_small = base_small_cells + current_offset
+        if current_offset < 0:
+            # Making smaller cells - allow more cells, but check minimum cell size
+            cells_small = max(2, proposed_cells_small)
+            # Recalculate max based on current proposed cell size
+            proposed_cell_size = small_span / float(cells_small) if cells_small > 0 else float('inf')
+            if proposed_cell_size < MIN_CELL_PX:
+                # Would be too small, limit to max_small_cells
+                cells_small = max_small_cells
+        else:
+            # Making larger cells - limit to max_small_cells
+            cells_small = max(2, min(max_small_cells, proposed_cells_small))
+        
         # approximate cell size in pixels along smaller dimension
         s = max(1.0, small_span / float(cells_small))
         cols = max(2, int(round(span_x / s)))
@@ -182,11 +196,40 @@ def run(image_path: str) -> int:
 
     def on_mouse(event, mx, my, _flags, _param):
         if event == cv2.EVENT_MOUSEMOVE:
-            mouse_xy[0] = mx
-            mouse_xy[1] = my
+            # Adjust for header offset (header is 80px tall)
+            header_height = 80
+            if my >= header_height:
+                mouse_xy[0] = mx
+                mouse_xy[1] = my - header_height
+            # Mouse in header area, don't update crosshair position
 
     cv2.setMouseCallback(window, on_mouse)
 
+    def draw_header_overlay(img: np.ndarray) -> np.ndarray:
+        """Draw header above the image (not overlaying it)."""
+        h_img, w_img = img.shape[:2]
+        header_height = 80
+        
+        # Create a new image with header space above
+        canvas = np.zeros((h_img + header_height, w_img, 3), dtype=np.uint8)
+        
+        # Draw header bar
+        cv2.rectangle(canvas, (0, 0), (w_img, header_height), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (0, header_height - 1), (w_img, header_height), (80, 80, 80), 1)
+        
+        # Status text
+        status_text = f"Grid: {cols}x{rows} cells | Adjust with +/- | Press 's' to save"
+        instruction_text = "ENTER/SPACE to continue | 'q' to quit pipeline"
+        
+        # Draw status text in header
+        cv2.putText(canvas, status_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(canvas, instruction_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        
+        # Place original image below header
+        canvas[header_height:, :] = img
+        
+        return canvas
+    
     while True:
         # Exit cleanly if the window X is pressed (check BEFORE imshow to avoid re-creating the window)
         if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
@@ -202,32 +245,77 @@ def run(image_path: str) -> int:
         thickness = 1
         cv2.line(overlaid, (max(0, cx - size), cy), (min(w_img - 1, cx + size), cy), color, thickness, cv2.LINE_AA)
         cv2.line(overlaid, (cx, max(0, cy - size)), (cx, min(h_img - 1, cy + size)), color, thickness, cv2.LINE_AA)
-        cv2.imshow(window, overlaid)
+        # Draw header above the image (not overlaying it)
+        display_with_header = draw_header_overlay(overlaid)
+        cv2.imshow(window, display_with_header)
         key = cv2.waitKey(16) & 0xFF
+        
+        # Check for ENTER (13) or SPACEBAR (32) to proceed to next tool
+        if key == 13 or key == 32:  # ENTER or SPACEBAR
+            # Auto-save current grid
+            base_name = os.path.splitext(os.path.basename(image_path))[0]
+            overlay_image = render_grid(base, cols, rows, rect_bounds)
+            img_path = os.path.join(output_dir, f"{base_name}_grid_{cols}x{rows}.png")
+            cv2.imwrite(img_path, overlay_image)
+            
+            grid_data = {
+                "source_image": image_path if os.path.isabs(image_path) else os.path.relpath(image_path, project_root),
+                "arena_bounds": {
+                    "left": rect_bounds[0],
+                    "top": rect_bounds[1],
+                    "right": rect_bounds[2],
+                    "bottom": rect_bounds[3]
+                } if rect_bounds else None,
+                "transform_json": os.path.relpath(tpath, project_root) if tpath and os.path.isabs(tpath) else tpath,
+                "current_grid": {
+                    "cols": cols,
+                    "rows": rows,
+                    "cell_size_px": {
+                        "x": int(round(span_x / float(cols))),
+                        "y": int(round(span_y / float(rows)))
+                    }
+                },
+                "image": os.path.relpath(img_path, project_root)
+            }
+            json_path = os.path.join(data_dir, f"{base_name}_grid.json")
+            with open(json_path, 'w') as f:
+                json.dump(grid_data, f, indent=2)
+            print("Saved and proceeding to next tool...")
+            cv2.destroyAllWindows()
+            return 0  # Normal exit - continue pipeline
+        
+        # Check for Q to quit entire pipeline
         if key == ord('q'):
-            break
+            print("Quitting entire pipeline...")
+            cv2.destroyAllWindows()
+            return 2  # Special exit code to stop pipeline
         elif key in (ord('+'), ord('=')):
-            # Step to more cells (smaller cells), up to 4 steps smaller
-            if offset > -4:
-                proposed = offset - 1
-                new_cells_small, new_cols, new_rows = compute_counts(proposed)
-                if new_cols >= 2 and new_rows >= 2:
-                    offset = proposed
-                    cells_small, cols, rows = new_cells_small, new_cols, new_rows
-            cw = int(round(span_x / cols))
-            rh = int(round(span_y / rows))
-            print(f"Grid: ~{cw}x{rh}px cells → {cols}x{rows}")
+            # Step to more cells (smaller cells) - no limit, can go as small as MIN_CELL_PX allows
+            proposed = offset - 1
+            new_cells_small, new_cols, new_rows = compute_counts(proposed)
+            # Check if cells would be too small (below minimum) or if we'd have too many cells
+            cell_size_x = span_x / float(new_cols) if new_cols > 0 else float('inf')
+            cell_size_y = span_y / float(new_rows) if new_rows > 0 else float('inf')
+            min_cell_size = min(cell_size_x, cell_size_y)
+            
+            if new_cols >= 2 and new_rows >= 2 and min_cell_size >= MIN_CELL_PX:
+                offset = proposed
+                cells_small, cols, rows = new_cells_small, new_cols, new_rows
+                cw = int(round(span_x / cols))
+                rh = int(round(span_y / rows))
+                print(f"Grid: ~{cw}x{rh}px cells → {cols}x{rows}")
+            else:
+                print(f"Grid: Cannot make cells smaller (minimum cell size: {MIN_CELL_PX}px)")
         elif key == ord('-'):
-            # Step to fewer cells (larger cells), up to 4 steps larger
-            if offset < 4:
-                proposed = offset + 1
-                new_cells_small, new_cols, new_rows = compute_counts(proposed)
-                if new_cols >= 2 and new_rows >= 2:
-                    offset = proposed
-                    cells_small, cols, rows = new_cells_small, new_cols, new_rows
-            cw = int(round(span_x / cols))
-            rh = int(round(span_y / rows))
-            print(f"Grid: ~{cw}x{rh}px cells → {cols}x{rows}")
+            # Step to fewer cells (larger cells) - no upper limit
+            proposed = offset + 1
+            new_cells_small, new_cols, new_rows = compute_counts(proposed)
+            if new_cols >= 2 and new_rows >= 2:
+                offset = proposed
+                cells_small, cols, rows = new_cells_small, new_cols, new_rows
+                cw = int(round(span_x / cols))
+                rh = int(round(span_y / rows))
+                print(f"Grid: ~{cw}x{rh}px cells → {cols}x{rows}")
         elif key == ord('s'):
             # Save current grid only
             base_name = os.path.splitext(os.path.basename(image_path))[0]

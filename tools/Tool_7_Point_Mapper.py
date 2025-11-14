@@ -215,6 +215,31 @@ class PointMapperApp:
         xr, yr = _apply_homography((xc, yc), self.homography_image_to_world_canvas)
         return int(round(xr)), int(round(yr))
 
+    def _draw_header_overlay(self, img: np.ndarray, title: str, point_count: int) -> np.ndarray:
+        """Draw header above the image (not overlaying it)."""
+        h, w = img.shape[:2]
+        header_height = 80
+        
+        # Create a new image with header space above
+        canvas = np.zeros((h + header_height, w, 3), dtype=np.uint8)
+        
+        # Draw header bar
+        cv2.rectangle(canvas, (0, 0), (w, header_height), (40, 40, 40), -1)
+        cv2.rectangle(canvas, (0, header_height - 1), (w, header_height), (80, 80, 80), 1)
+        
+        # Status text
+        status_text = f"{title} | Points: {point_count} | Click on Original to map points"
+        instruction_text = "Press 'r' to reset | 's' to save | ENTER/SPACE to continue | 'q' to quit pipeline"
+        
+        # Draw status text in header
+        cv2.putText(canvas, status_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(canvas, instruction_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        
+        # Place original image below header
+        canvas[header_height:, :] = img
+        
+        return canvas
+
     def _refresh_views(self) -> None:
         left = self.img_original.copy()
         right = self.img_rectified.copy()
@@ -249,8 +274,12 @@ class PointMapperApp:
         draw_crosshair(left, self._mouse_left[0], self._mouse_left[1])
         draw_crosshair(right, self._mouse_right[0], self._mouse_right[1])
 
-        cv2.imshow(ORIGINAL_WIN_TITLE, left)
-        cv2.imshow(RECTIFIED_WIN_TITLE, right)
+        # Draw headers above images
+        left_with_header = self._draw_header_overlay(left, "Original", len(self.left_points))
+        right_with_header = self._draw_header_overlay(right, "Rectified", len(self.right_points))
+
+        cv2.imshow(ORIGINAL_WIN_TITLE, left_with_header)
+        cv2.imshow(RECTIFIED_WIN_TITLE, right_with_header)
 
     def _on_left_click(self, x: int, y: int) -> None:
         xr, yr = self._map_point(x, y)
@@ -260,13 +289,32 @@ class PointMapperApp:
         self._refresh_views()
 
     def _mouse_callback_original(self, event, x, y, flags, param):  # noqa: ANN001 - OpenCV signature
+        # Adjust for header offset (header is 80px tall)
+        header_height = 80
+        if y < header_height:
+            # Mouse is in header area, ignore clicks but allow cursor tracking
+            if event == cv2.EVENT_MOUSEMOVE:
+                self._mouse_left = [int(x), int(y)]
+                self._refresh_views()
+            return
+        # Adjust y coordinate to account for header
+        y_adjusted = y - header_height
+        
         if event == cv2.EVENT_LBUTTONDOWN:
-            self._on_left_click(int(x), int(y))
+            self._on_left_click(int(x), int(y_adjusted))
         elif event == cv2.EVENT_MOUSEMOVE:
             self._mouse_left = [int(x), int(y)]
             self._refresh_views()
 
     def _mouse_callback_rectified(self, event, x, y, flags, param):  # noqa: ANN001 - OpenCV signature
+        # Adjust for header offset (header is 80px tall)
+        header_height = 80
+        if y < header_height:
+            # Mouse is in header area, don't update cursor position
+            return
+        # Adjust y coordinate to account for header
+        y_adjusted = y - header_height
+        
         if event == cv2.EVENT_MOUSEMOVE:
             self._mouse_right = [int(x), int(y)]
             self._refresh_views()
@@ -296,8 +344,18 @@ class PointMapperApp:
             if cv2.getWindowProperty(RECTIFIED_WIN_TITLE, cv2.WND_PROP_VISIBLE) < 1:
                 break
             key = cv2.waitKey(16) & 0xFF
+            
+            # Check for ENTER (13) or SPACEBAR (32) to proceed to next tool
+            if key == 13 or key == 32:  # ENTER or SPACEBAR
+                print("Proceeding to next tool...")
+                cv2.destroyAllWindows()
+                return 0  # Normal exit - continue pipeline
+            
+            # Check for Q to quit entire pipeline
             if key == ord('q'):
-                break
+                print("Quitting entire pipeline...")
+                cv2.destroyAllWindows()
+                return 2  # Special exit code to stop pipeline
             elif key == ord('r'):
                 self.left_points.clear()
                 self.right_points.clear()
