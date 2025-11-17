@@ -31,6 +31,11 @@
       2048,
       1536
     ],
+    "margin_pixels": 200,
+    "corrected_size": [
+      2448,
+      1936
+    ],
     "homography": [
       [
         0.9686171443430749,

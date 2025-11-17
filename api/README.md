@@ -75,6 +75,46 @@ for row in grid_map:
             print(f"Cell ({cell['col']}, {cell['row']}): {cell['x_mm']:.1f}mm, {cell['y_mm']:.1f}mm")
 ```
 
+### Transform Raw GPS Image to Rectified View
+
+```python
+import cv2
+from overlay import GPSOverlay
+
+overlay = GPSOverlay()
+
+# Transform a raw GPS image (like GPS-Real.png) to rectified top-down view
+# This applies fisheye correction and perspective transformation
+rectified, offset = overlay.transform_image("GPS-Real.png", show_grid=True)
+
+# Save the result
+cv2.imwrite("rectified_output.png", rectified)
+
+# Handle clicks on the transformed image to tint grid cells
+def on_click(event, x_img, y_img, flags, param):
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # Convert image pixel coordinates to canvas coordinates
+        x_canvas = x_img + offset["offset_x"]
+        y_canvas = y_img + offset["offset_y"]
+        
+        # Get the grid cell for this click
+        cell = overlay.get_grid_cell_from_rectified(x_canvas, y_canvas)
+        if cell["in_bounds"]:
+            print(f"Clicked cell: ({cell['col']}, {cell['row']})")
+            # Tint the cell (example: draw a rectangle)
+            cv2.rectangle(rectified, 
+                         (int(cell["center_x"] - offset["offset_x"] - 20),
+                          int(cell["center_y"] - offset["offset_y"] - 20)),
+                         (int(cell["center_x"] - offset["offset_x"] + 20),
+                          int(cell["center_y"] - offset["offset_y"] + 20)),
+                         (0, 255, 0), -1)
+            cv2.imshow("Rectified", rectified)
+
+cv2.imshow("Rectified", rectified)
+cv2.setMouseCallback("Rectified", on_click)
+cv2.waitKey(0)
+```
+
 ## API Reference
 
 ### GPSOverlay Class
@@ -98,6 +138,15 @@ Get grid cell information for GPS coordinates.
 - `y`: GPS server Y coordinate
 - Returns: Dictionary with `col`, `row`, `in_bounds`, `center_x`, `center_y`
 
+#### `get_grid_cell_from_rectified(x_rect, y_rect) -> dict`
+Get grid cell information from rectified canvas coordinates.
+
+Useful when you have coordinates in rectified canvas space (e.g., from clicking on a transformed image).
+
+- `x_rect`: X coordinate in rectified canvas space
+- `y_rect`: Y coordinate in rectified canvas space
+- Returns: Dictionary with `col`, `row`, `in_bounds`, `center_x`, `center_y`
+
 #### `get_real_coords(x, y) -> dict`
 Get real-world coordinates in millimeters (requires Tool 6 calibration).
 
@@ -111,10 +160,38 @@ Get complete grid mapping as 2D array.
 
 - Returns: 2D list (rows x cols) of cell dictionaries
 
+#### `transform_image(image_path, show_grid=True) -> tuple`
+Transform a raw GPS camera image to rectified top-down view.
+
+**Requires:** OpenCV (`opencv-python`) and NumPy (`numpy`)
+
+- `image_path`: Path to input GPS image file (e.g., "GPS-Real.png")
+- `show_grid`: If `True`, draws grid overlay on the rectified image
+- Returns: Tuple of:
+  - NumPy array (BGR image) ready to save or display
+  - Dictionary with `offset_x` and `offset_y` for converting image pixel coordinates to canvas coordinates
+- Raises: `ImportError` if OpenCV/NumPy not installed, `ValueError` if image cannot be loaded
+
+This function applies:
+1. Fisheye distortion correction (using calibration margins)
+2. Perspective transformation (homography) to get top-down view
+3. Optional grid overlay matching your calibration settings
+
+**Note:** To convert click coordinates `(x_img, y_img)` on the transformed image to canvas coordinates:
+```python
+x_canvas = x_img + offset["offset_x"]
+y_canvas = y_img + offset["offset_y"]
+```
+Then use `get_grid_cell_from_rectified(x_canvas, y_canvas)` to get the grid cell.
+
 ## Requirements
 
 - Python 3.6+
-- No external dependencies (uses only standard library)
+- **For coordinate transformations:** No external dependencies (uses only standard library)
+- **For `transform_image()`:** Requires `opencv-python` and `numpy`
+  ```bash
+  pip install opencv-python numpy
+  ```
 
 ## Coordinate Systems
 

@@ -3,3 +3,4 @@ numpy==1.26.4
 scikit-learn==1.5.2
 PyQt5==5.15.11
 requests>=2.31.0
+mediapipe>=0.10.21

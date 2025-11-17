@@ -85,6 +85,14 @@ def create_gps_overlay_json(
             }
             print(f"[OK] Loaded real-world calibration: {calib_data['axis_mm_per_pixel']['x']:.3f} mm/px")
 
+    # Extract fisheye correction parameters for image transformation
+    margin_pixels = fisheye_data.get("margin_pixels", 200)  # Default to 200 if not present
+    corrected_size = fisheye_data.get("corrected_size", None)
+    if corrected_size is None:
+        # Calculate corrected size from image_size + margins
+        img_w, img_h = fisheye_data["image_size"]
+        corrected_size = [img_w + 2 * margin_pixels, img_h + 2 * margin_pixels]
+
     # Create consolidated overlay data
     overlay_data = {
         "gps_overlay": {
@@ -92,6 +100,8 @@ def create_gps_overlay_json(
             "distortion_coeffs": fisheye_data["distortion_coeffs"],
             "calibration_size": fisheye_data["image_size"],
             "server_size": [2048, 1536],  # GPS server resolution
+            "margin_pixels": margin_pixels,  # Margin added during fisheye correction
+            "corrected_size": corrected_size,  # Size of corrected image (with margins)
             "homography": transform_data["homography_image_to_world_canvas"],
             "arena_bounds": grid_data["arena_bounds"],
             "grid": current_grid

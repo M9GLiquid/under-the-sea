@@ -7,6 +7,9 @@ Transforms GPS server coordinates (2048x1536) to:
 - Grid cell positions (dynamically configured)
 - Real-world coordinates (mm)
 
+Also provides image transformation:
+- Transform raw GPS images to rectified top-down view with optional grid overlay
+
 This is a standalone API that can be exported and used independently.
 
 Usage:
@@ -17,6 +20,11 @@ Usage:
     cell = overlay.get_grid_cell(50, 50)
     real_pos = overlay.get_real_coords(50, 50)
     grid_map = overlay.get_grid_map()
+    
+    # Transform images (requires opencv-python and numpy)
+    import cv2
+    rectified = overlay.transform_image("GPS-Real.png", show_grid=True)
+    cv2.imwrite("rectified.png", rectified)
 """
 
 import json
@@ -61,8 +69,18 @@ class GPSOverlay:
         # Image sizes:
         # - calib_size: Original calibration image size (e.g., 1206x906)
         # - server_size: GPS server image size (typically 2048x1536)
+        # - corrected_size: Size of fisheye-corrected image (with margins)
+        # - margin_pixels: Margin added around image during fisheye correction
         self.calib_size = tuple(self.data["calibration_size"])
         self.server_size = tuple(self.data["server_size"])
+        self.margin_pixels = self.data.get("margin_pixels", 200)  # Default to 200 if not present
+        corrected_size = self.data.get("corrected_size", None)
+        if corrected_size is None:
+            # Calculate from calib_size + margins if not present (backward compatibility)
+            self.corrected_size = (self.calib_size[0] + 2 * self.margin_pixels,
+                                   self.calib_size[1] + 2 * self.margin_pixels)
+        else:
+            self.corrected_size = tuple(corrected_size)
 
         # ===== Transformation Matrix =====
         # Homography matrix that transforms from corrected (fisheye-removed) space
@@ -178,6 +196,65 @@ class GPSOverlay:
         """
         x_rect, y_rect = self.map_coords(x, y)
 
+        if math.isnan(x_rect) or math.isnan(y_rect):
+            return {"col": 0, "row": 0, "in_bounds": False, "center_x": 0, "center_y": 0}
+
+        # Calculate grid cell position
+        left, top = self.arena_bounds["left"], self.arena_bounds["top"]
+        right, bottom = self.arena_bounds["right"], self.arena_bounds["bottom"]
+
+        cell_width = (right - left) / self.grid_cols
+        cell_height = (bottom - top) / self.grid_rows
+
+        col = int((x_rect - left) // cell_width)
+        row = int((y_rect - top) // cell_height)
+
+        # Check bounds
+        in_bounds = (0 <= col < self.grid_cols and
+                    0 <= row < self.grid_rows)
+
+        # Calculate cell center
+        center_x = left + (col + 0.5) * cell_width
+        center_y = top + (row + 0.5) * cell_height
+
+        return {
+            "col": col,
+            "row": row,
+            "in_bounds": in_bounds,
+            "center_x": center_x,
+            "center_y": center_y
+        }
+
+    def get_grid_cell_from_rectified(self, x_rect: float, y_rect: float) -> Dict:
+        """
+        Get grid cell from rectified canvas coordinates.
+        
+        This function is useful when you have coordinates in rectified canvas space
+        (e.g., from clicking on a transformed image) and want to know which grid cell
+        they correspond to.
+        
+        Args:
+            x_rect: X coordinate in rectified canvas space
+            y_rect: Y coordinate in rectified canvas space
+        
+        Returns:
+            Dictionary with grid cell information:
+            {
+                "col": int,           # Grid column index (0 to grid_cols-1)
+                "row": int,           # Grid row index (0 to grid_rows-1)
+                "in_bounds": bool,    # True if point is within arena bounds
+                "center_x": float,    # Cell center X coordinate in rectified space
+                "center_y": float     # Cell center Y coordinate in rectified space
+            }
+        
+        Example:
+            # After transforming an image and getting click coordinates
+            # Click is at pixel (100, 200) in the transformed image
+            # First convert to canvas space: x_canvas = 100 + offset_x
+            cell = overlay.get_grid_cell_from_rectified(x_canvas, y_canvas)
+            if cell["in_bounds"]:
+                print(f"Clicked cell: ({cell['col']}, {cell['row']})")
+        """
         if math.isnan(x_rect) or math.isnan(y_rect):
             return {"col": 0, "row": 0, "in_bounds": False, "center_x": 0, "center_y": 0}
 
@@ -338,3 +415,200 @@ class GPSOverlay:
             grid_map.append(grid_row)
 
         return grid_map
+
+    def transform_image(self, image_path: str, show_grid: bool = True) -> Tuple['np.ndarray', Dict[str, int]]:
+        """
+        Transform a raw GPS image to rectified view with optional grid overlay.
+        
+        This function takes a raw GPS camera image (like GPS-Real.png) and applies:
+        1. Fisheye distortion correction
+        2. Perspective transformation (homography) to get top-down rectified view
+        3. Optional grid overlay matching the calibration settings
+        
+        Requires: OpenCV (cv2) and NumPy (numpy) - install with: pip install opencv-python numpy
+        
+        Args:
+            image_path: Path to the input GPS image file
+            show_grid: If True, draws the grid overlay on the rectified image
+        
+        Returns:
+            Tuple of:
+            - NumPy array (BGR image) of the rectified image, ready to save or display.
+              Shape: (height, width, 3) with dtype uint8
+            - Dictionary with offset information:
+              {
+                  "offset_x": int,  # X offset to convert image pixel to canvas coordinate
+                  "offset_y": int   # Y offset to convert image pixel to canvas coordinate
+              }
+              To convert a click coordinate (x_img, y_img) to canvas space:
+              x_canvas = x_img + offset_x
+              y_canvas = y_img + offset_y
+        
+        Raises:
+            ImportError: If OpenCV or NumPy are not installed
+            FileNotFoundError: If image_path doesn't exist
+            ValueError: If image cannot be loaded
+        
+        Example:
+            import cv2
+            from overlay import GPSOverlay
+            
+            overlay = GPSOverlay()
+            
+            # Transform image with grid
+            rectified, offset = overlay.transform_image("GPS-Real.png", show_grid=True)
+            
+            # Handle click on transformed image
+            def on_click(event, x_img, y_img, flags, param):
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    # Convert image pixel to canvas coordinate
+                    x_canvas = x_img + offset["offset_x"]
+                    y_canvas = y_img + offset["offset_y"]
+                    
+                    # Get grid cell
+                    cell = overlay.get_grid_cell_from_rectified(x_canvas, y_canvas)
+                    if cell["in_bounds"]:
+                        print(f"Clicked cell: ({cell['col']}, {cell['row']})")
+            
+            cv2.imshow("Rectified", rectified)
+            cv2.setMouseCallback("Rectified", on_click)
+            cv2.waitKey(0)
+        """
+        try:
+            import cv2
+            import numpy as np
+        except ImportError as e:
+            raise ImportError(
+                "transform_image() requires OpenCV and NumPy. "
+                "Install with: pip install opencv-python numpy"
+            ) from e
+        
+        # Load input image
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError(f"Could not load image: {image_path}")
+        
+        h, w = image.shape[:2]
+        
+        # Step 1: Apply fisheye correction
+        # Convert calibration data to numpy arrays
+        camera_matrix = np.array(self.data["camera_matrix"], dtype=np.float32)
+        dist_coeffs = np.array(self.data["distortion_coeffs"], dtype=np.float32)
+        
+        # Scale image to calibration resolution if needed
+        if (w, h) != self.calib_size:
+            scale_x = self.calib_size[0] / w
+            scale_y = self.calib_size[1] / h
+            image_scaled = cv2.resize(image, self.calib_size, interpolation=cv2.INTER_LINEAR)
+        else:
+            image_scaled = image
+            scale_x = scale_y = 1.0
+        
+        # Create new camera matrix for expanded output (with margins)
+        margin = self.margin_pixels
+        expanded_size = self.corrected_size
+        new_camera_matrix = camera_matrix.copy()
+        new_camera_matrix[0, 2] += margin  # cx offset
+        new_camera_matrix[1, 2] += margin  # cy offset
+        
+        # Reduce focal length slightly to show more area (same as Tool 1)
+        scale_factor = 0.8
+        new_camera_matrix[0, 0] *= scale_factor  # fx
+        new_camera_matrix[1, 1] *= scale_factor  # fy
+        
+        # Create undistortion maps for expanded size
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+            camera_matrix, dist_coeffs, np.eye(3), new_camera_matrix,
+            expanded_size, cv2.CV_16SC2
+        )
+        
+        # Apply fisheye correction
+        corrected_image = cv2.remap(image_scaled, map1, map2, cv2.INTER_LINEAR)
+        
+        # Step 2: Apply homography transformation to get rectified view
+        # The stored homography (homography_image_to_world_canvas) already includes
+        # the translation to canvas space, so we use it directly without applying
+        # another translation. This ensures coordinates match map_coords().
+        h_matrix = np.array(self.homography, dtype=np.float32)
+        
+        # Calculate warp bounds to determine output canvas size
+        # The homography produces coordinates in canvas space (may include negative values)
+        corr_h, corr_w = corrected_image.shape[:2]
+        corners = np.array([
+            [0, 0],
+            [corr_w - 1, 0],
+            [corr_w - 1, corr_h - 1],
+            [0, corr_h - 1]
+        ], dtype=np.float32)
+        
+        # Transform corners to rectified canvas space (homography already has translation)
+        corners_h = cv2.perspectiveTransform(corners.reshape(-1, 1, 2), h_matrix).reshape(-1, 2)
+        min_x = int(np.floor(corners_h[:, 0].min()))
+        max_x = int(np.ceil(corners_h[:, 0].max()))
+        min_y = int(np.floor(corners_h[:, 1].min()))
+        max_y = int(np.ceil(corners_h[:, 1].max()))
+        
+        # Add padding
+        padding = 50
+        min_x -= padding
+        min_y -= padding
+        max_x += padding
+        max_y += padding
+        
+        # Translate homography so output starts at (0,0) for display
+        # This translation is ONLY for the output image, not for coordinate calculations
+        translation = np.array([[1.0, 0.0, -min_x],
+                                [0.0, 1.0, -min_y],
+                                [0.0, 0.0, 1.0]], dtype=np.float32)
+        h_matrix_canvas = translation @ h_matrix
+        
+        # Calculate output canvas size
+        out_w = int(max_x - min_x)
+        out_h = int(max_y - min_y)
+        
+        # Warp the corrected image to rectified space
+        rectified_image = cv2.warpPerspective(
+            corrected_image, h_matrix_canvas, (out_w, out_h),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0)
+        )
+        
+        # Step 3: Optionally add grid overlay
+        if show_grid:
+            # Arena bounds are in the original canvas coordinate space (from map_coords)
+            # We need to translate them to the output image coordinates
+            left, top = self.arena_bounds["left"], self.arena_bounds["top"]
+            right, bottom = self.arena_bounds["right"], self.arena_bounds["bottom"]
+            
+            # Translate bounds to output canvas coordinates (accounting for the display translation)
+            grid_left = int(left - min_x)
+            grid_top = int(top - min_y)
+            grid_right = int(right - min_x)
+            grid_bottom = int(bottom - min_y)
+            
+            # Draw grid lines
+            cols = self.grid_cols
+            rows = self.grid_rows
+            
+            # Vertical lines
+            for i in range(cols + 1):
+                x = int(grid_left + (i * (grid_right - grid_left) / cols))
+                x = max(0, min(out_w - 1, x))
+                cv2.line(rectified_image, (x, grid_top), (x, grid_bottom),
+                        (0, 0, 255), 1, cv2.LINE_AA)
+            
+            # Horizontal lines
+            for j in range(rows + 1):
+                y = int(grid_top + (j * (grid_bottom - grid_top) / rows))
+                y = max(0, min(out_h - 1, y))
+                cv2.line(rectified_image, (grid_left, y), (grid_right, y),
+                        (0, 0, 255), 1, cv2.LINE_AA)
+        
+        # Return image and offset information for coordinate conversion
+        offset_info = {
+            "offset_x": min_x,
+            "offset_y": min_y
+        }
+        
+        return rectified_image, offset_info
