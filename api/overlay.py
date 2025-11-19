@@ -249,6 +249,96 @@ class GPSOverlay:
             "center_y": center_y
         }
 
+    def get_grid_cell_with_height_offset(self, x: float, y: float, height_mm: float = 1000.0) -> Dict:
+        """
+        Get grid cell position with height offset correction.
+        
+        Corrects for objects above the arena floor (e.g., hand 1m above floor).
+        Uses perspective projection geometry to calculate position-dependent offset.
+        
+        Args:
+            x: GPS server X coordinate (typically 0-2048)
+            y: GPS server Y coordinate (typically 0-1536)
+            height_mm: Height of object above arena floor in millimeters (default: 1000mm = 1m)
+        
+        Returns:
+            Dictionary with corrected grid cell information (same format as get_grid_cell).
+            If real-world calibration is not available, falls back to get_grid_cell() without offset.
+        
+        Example:
+            # Get grid cell for hand position (1m above floor)
+            cell = overlay.get_grid_cell_with_height_offset(1024, 768, height_mm=1000.0)
+            if cell["in_bounds"]:
+                print(f"Hand is in cell ({cell['col']}, {cell['row']})")
+        """
+        # Get apparent position (without height correction)
+        cell_info = self.get_grid_cell(x, y)
+        if not cell_info["in_bounds"]:
+            return cell_info
+        
+        # If real-world calibration is not available, return uncorrected position
+        if not self.real_world_available:
+            return cell_info
+        
+        row_apparent = cell_info["row"]
+        col_apparent = cell_info["col"]
+        
+        # Calculate offset using perspective projection
+        # The homography matrix's [2][2] element relates to perspective scale
+        h = self.homography
+        perspective_scale = h[2][2]
+        
+        # Estimate camera angle from perspective scale
+        # This is a simplified model - assumes camera is looking down at an angle
+        try:
+            camera_angle_rad = math.acos(min(1.0, max(0.0, perspective_scale)))
+        except (ValueError, TypeError):
+            # Fallback if calculation fails
+            return cell_info
+        
+        # Calculate base offset in millimeters
+        base_offset_mm = height_mm * math.tan(camera_angle_rad)
+        
+        # Convert to pixels using real-world calibration
+        base_offset_x_px = base_offset_mm / self.mm_per_pixel_x
+        base_offset_y_px = base_offset_mm / self.mm_per_pixel_y
+        
+        # Grid cell dimensions
+        left, top = self.arena_bounds["left"], self.arena_bounds["top"]
+        right, bottom = self.arena_bounds["right"], self.arena_bounds["bottom"]
+        cell_width = (right - left) / self.grid_cols
+        cell_height = (bottom - top) / self.grid_rows
+        
+        # Distance from center (normalized)
+        center_row, center_col = self.grid_rows / 2.0, self.grid_cols / 2.0
+        row_distance = (row_apparent - center_row) / max(center_row, 1.0)
+        col_distance = (col_apparent - center_col) / max(center_col, 1.0)
+        
+        # Apply position-dependent offset
+        # Objects further from center appear more offset due to perspective
+        row_offset = (base_offset_y_px / cell_height) * row_distance
+        col_offset = -(base_offset_x_px / cell_width) * col_distance
+        
+        # Calculate corrected cell position
+        row_corrected = row_apparent - row_offset
+        col_corrected = col_apparent - col_offset
+        
+        # Clamp to valid grid bounds
+        row_corrected = max(0, min(self.grid_rows - 1, row_corrected))
+        col_corrected = max(0, min(self.grid_cols - 1, col_corrected))
+        
+        # Calculate corrected cell center
+        center_x = left + (int(col_corrected) + 0.5) * cell_width
+        center_y = top + (int(row_corrected) + 0.5) * cell_height
+        
+        return {
+            "col": int(col_corrected),
+            "row": int(row_corrected),
+            "in_bounds": True,
+            "center_x": center_x,
+            "center_y": center_y
+        }
+
     def get_grid_cell_from_rectified(self, x_rect: float, y_rect: float) -> Dict:
         """
         Get grid cell from rectified canvas coordinates.
