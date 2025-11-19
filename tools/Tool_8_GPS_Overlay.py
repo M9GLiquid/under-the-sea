@@ -94,6 +94,7 @@ def create_gps_overlay_json(
         corrected_size = [img_w + 2 * margin_pixels, img_h + 2 * margin_pixels]
 
     # Create consolidated overlay data
+    # Note: scale_factor is hardcoded to 0.8 in Tool 1 (same as Tool 7 uses)
     overlay_data = {
         "gps_overlay": {
             "camera_matrix": fisheye_data["camera_matrix"],
@@ -102,6 +103,7 @@ def create_gps_overlay_json(
             "server_size": [2048, 1536],  # GPS server resolution
             "margin_pixels": margin_pixels,  # Margin added during fisheye correction
             "corrected_size": corrected_size,  # Size of corrected image (with margins)
+            "scale_factor": 0.8,  # Scale factor used in corrected camera matrix (same as Tool 1/7)
             "homography": transform_data["homography_image_to_world_canvas"],
             "arena_bounds": grid_data["arena_bounds"],
             "grid": current_grid

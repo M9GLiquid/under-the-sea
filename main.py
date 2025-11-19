@@ -11,6 +11,9 @@ This script orchestrates the complete processing pipeline automatically:
 6. Tool 7: Point Mapper (interactive viewer)
 7. Tool 8: GPS Overlay API Creator (automated)
 
+Note: Tool 9 (ROS2 Coordinate Viewer) is standalone and should be run separately:
+    python tools/Tool_9_ROS2_Coordinate_Viewer.py
+
 Usage:
     python main.py
     
@@ -172,10 +175,11 @@ def parse_tool_spec(spec: str) -> Set[int]:
                 raise ValueError(f"Invalid tool number: {part}")
     
     # Validate tool numbers
-    valid_tools = set(range(1, 9))
+    # Tool 9 is standalone but can be called via --tool 9
+    valid_tools = set(range(1, 10))  # Tools 1-9 (Tool 9 is standalone but callable)
     invalid = tools - valid_tools
     if invalid:
-        raise ValueError(f"Invalid tool numbers: {invalid}. Valid tools are 1-8")
+        raise ValueError(f"Invalid tool numbers: {invalid}. Valid tools are 1-9")
     
     return tools
 
@@ -186,11 +190,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                    # Run all tools (1-8)
-  python main.py --tool 1,2,3      # Run tools 1, 2, and 3
+  python main.py                    # Run all tools (1-8) with web camera (default)
+  python main.py --source web       # Explicitly fetch from web camera
+  python main.py --source image     # Use local images/GPS-Real.png file
+  python main.py --tool 1,2,3       # Run tools 1, 2, and 3
   python main.py --tool 1-4         # Run tools 1 through 4
-  python main.py --tool 1,3-5,7    # Run tools 1, 3, 4, 5, and 7
+  python main.py --tool 1,3-5,7     # Run tools 1, 3, 4, 5, and 7
   python main.py --tool 6           # Run only tool 6
+  
+  # Tool 9 is standalone - run separately:
+  python tools/Tool_9_ROS2_Coordinate_Viewer.py
         """
     )
     parser.add_argument(
@@ -199,28 +208,89 @@ Examples:
         default="all",
         help="Tools to run: comma-separated list (1,2,3), ranges (1-4), or 'all' (default: all)"
     )
+    parser.add_argument(
+        "--source",
+        type=str,
+        default="web",
+        choices=["web", "image"],
+        help="Image source: 'web' (default) to fetch from web camera, 'image' to use local file"
+    )
     
     args = parser.parse_args()
     
     # Parse tool specification
     try:
         tools_to_run = parse_tool_spec(args.tool)
+        
+        # Handle Tool 9 separately (standalone tool)
+        if 9 in tools_to_run:
+            tools_to_run.remove(9)
+            print("\n" + "="*60)
+            print("🔧 Tool 9: ROS2 Coordinate Viewer (Standalone)")
+            print("="*60)
+            tool9_path = get_project_root() / "tools" / "Tool_9_ROS2_Coordinate_Viewer.py"
+            if not tool9_path.exists():
+                print(f"❌ Error: Tool 9 not found: {tool9_path}")
+                return 1
+            print(f"Running standalone tool: python {tool9_path.name}")
+            print("="*60 + "\n")
+            result = subprocess.run(
+                [sys.executable, str(tool9_path)],
+                cwd=str(get_project_root()),
+                check=False
+            )
+            return result.returncode
     except ValueError as e:
         print(f"❌ Error parsing --tool argument: {e}")
         return 1
     
     project_root = get_project_root()
     
-    # Always use images/GPS-Real.png as input
+    # Determine image source and fetch/load accordingly
     image_path = project_root / "images" / "GPS-Real.png"
     
-    if not image_path.exists():
-        print(f"❌ Error: Input image not found: {image_path}")
-        print("   Please ensure images/GPS-Real.png exists")
-        print("   (Fetch from camera separately using: python tools/axis_test.py)")
-        return 1
+    if args.source == "web":
+        # Fetch from web camera
+        print(f"\n📷 Fetching image from web camera...")
+        try:
+            # Import axis_test module
+            sys.path.insert(0, str(project_root / "tools"))
+            from axis_test import fetch_axis_snapshot
+            
+            # Fetch and save to default location
+            img = fetch_axis_snapshot(str(image_path))
+            if img is not None:
+                print(f"✓ Successfully fetched image from web camera")
+                print(f"   Saved to: {image_path.name}")
+            else:
+                print(f"⚠ Failed to fetch from web camera, checking for local file...")
+                if not image_path.exists():
+                    print(f"❌ Error: Could not fetch from web and no local image found: {image_path}")
+                    print("   Please ensure images/GPS-Real.png exists or check camera connection")
+                    return 1
+        except ImportError as e:
+            print(f"⚠ Warning: Could not import axis_test module: {e}")
+            print(f"   Falling back to local file...")
+            if not image_path.exists():
+                print(f"❌ Error: Input image not found: {image_path}")
+                print("   Please ensure images/GPS-Real.png exists")
+                return 1
+        except Exception as e:
+            print(f"⚠ Warning: Error fetching from web camera: {e}")
+            print(f"   Falling back to local file...")
+            if not image_path.exists():
+                print(f"❌ Error: Input image not found: {image_path}")
+                print("   Please ensure images/GPS-Real.png exists")
+                return 1
+    else:  # args.source == "image"
+        # Use local file
+        if not image_path.exists():
+            print(f"❌ Error: Input image not found: {image_path}")
+            print("   Please ensure images/GPS-Real.png exists")
+            print("   (Or use --source web to fetch from camera)")
+            return 1
+        print(f"\n📷 Using local image: {image_path.name}")
     
-    print(f"\n📷 Using input image: {image_path.name}")
     print(f"🔧 Tools to run: {sorted(tools_to_run)}")
     
     # Extract base name from image path

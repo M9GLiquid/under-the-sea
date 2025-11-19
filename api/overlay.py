@@ -145,10 +145,34 @@ class GPSOverlay:
         x_cal = float(x) * scale_x
         y_cal = float(y) * scale_y
 
-        # Step 2: The fisheye correction was already computed during calibration
-        # The homography matrix maps directly from corrected space to rectified space
-        # So we use the calibration coordinates directly with the homography
-        x_corr, y_corr = x_cal, y_cal
+        # Step 2: Apply fisheye undistortion to get corrected coordinates
+        # The homography matrix maps from corrected (fisheye-removed) space to rectified space
+        # We need to undistort the calibration coordinates first
+        try:
+            import cv2
+            import numpy as np
+            
+            # Build new camera matrix (includes margin shift and scale factor)
+            camera_matrix = np.array(self.data["camera_matrix"], dtype=np.float64)
+            margin = self.margin_pixels
+            scale_factor = self.data.get("scale_factor", 0.8)  # Default to 0.8 if not in JSON (backward compatibility)
+            
+            new_camera_matrix = camera_matrix.copy().astype(np.float64)
+            new_camera_matrix[0, 2] += float(margin)  # cx offset
+            new_camera_matrix[1, 2] += float(margin)  # cy offset
+            new_camera_matrix[0, 0] *= float(scale_factor)  # fx scale
+            new_camera_matrix[1, 1] *= float(scale_factor)  # fy scale
+            
+            # Apply fisheye undistortion
+            dist_coeffs = np.array(self.data["distortion_coeffs"], dtype=np.float64).reshape(-1, 1)
+            pts = np.array([[[x_cal, y_cal]]], dtype=np.float64)
+            undist = cv2.fisheye.undistortPoints(pts, camera_matrix, dist_coeffs, R=np.eye(3), P=new_camera_matrix)
+            x_corr = float(undist[0, 0, 0])
+            y_corr = float(undist[0, 0, 1])
+        except ImportError:
+            # Fallback if OpenCV not available (shouldn't happen for coordinate transformation)
+            # This is a simplified approximation - not accurate but prevents crashes
+            x_corr, y_corr = x_cal, y_cal
 
         # Step 3: Apply homography transformation (corrected → rectified canvas)
         # Homography is a 3x3 matrix that performs perspective transformation
@@ -511,8 +535,8 @@ class GPSOverlay:
         new_camera_matrix[0, 2] += margin  # cx offset
         new_camera_matrix[1, 2] += margin  # cy offset
         
-        # Reduce focal length slightly to show more area (same as Tool 1)
-        scale_factor = 0.8
+        # Reduce focal length slightly to show more area (same as Tool 1/7/9)
+        scale_factor = self.data.get("scale_factor", 0.8)  # Read from JSON (same as map_coords)
         new_camera_matrix[0, 0] *= scale_factor  # fx
         new_camera_matrix[1, 1] *= scale_factor  # fy
         
