@@ -25,8 +25,9 @@ import sys
 import subprocess
 import time
 import argparse
+import importlib.util
 from pathlib import Path
-from typing import Set
+from typing import Literal, Set, Union
 
 
 def get_project_root() -> Path:
@@ -34,9 +35,10 @@ def get_project_root() -> Path:
     return Path(__file__).resolve().parent
 
 
-def run_tool(tool_name: str, args: list, description: str) -> bool:
+def run_tool(tool_name: str, args: list, description: str) -> Union[bool, Literal["quit_pipeline"]]:
     """
-    Run a tool script and return True if successful.
+    Run a tool script and return True if successful, False on failure,
+    or the literal string "quit_pipeline" when the user requests to stop.
     Waits for the tool to complete before returning.
     
     Args:
@@ -45,7 +47,7 @@ def run_tool(tool_name: str, args: list, description: str) -> bool:
         description: Human-readable description for progress output
     
     Returns:
-        True if tool exited successfully, False otherwise
+        True if tool exited successfully, False otherwise, or "quit_pipeline"
     """
     project_root = get_project_root()
     tool_path = project_root / "tools" / tool_name
@@ -58,11 +60,11 @@ def run_tool(tool_name: str, args: list, description: str) -> bool:
     print(f"🔧 {description}")
     print(f"{'='*60}")
     print(f"Running: python {tool_path.name} {' '.join(args)}")
-    print(f"\n💡 Instructions:")
-    print(f"   - Complete your work in this tool")
-    print(f"   - Press 's' to SAVE your work")
-    print(f"   - Press 'q' to QUIT and continue to next tool")
-    print(f"   - The next tool will start automatically after you quit")
+    print("\n💡 Instructions:")
+    print("   - Complete your work in this tool")
+    print("   - Press 's' to SAVE your work")
+    print("   - Press 'q' to QUIT and continue to next tool")
+    print("   - The next tool will start automatically after you quit")
     print()
     
     try:
@@ -251,13 +253,19 @@ Examples:
     
     if args.source == "web":
         # Fetch from web camera
-        print(f"\n📷 Fetching image from web camera...")
         try:
-            # Import axis_test module
-            sys.path.insert(0, str(project_root / "tools"))
-            from axis_test import fetch_axis_snapshot
+            axis_module_path = project_root / "tools" / "axis_test.py"
+            if not axis_module_path.exists():
+                raise ImportError(f"axis_test module not found at {axis_module_path}")
+            spec = importlib.util.spec_from_file_location("axis_test", axis_module_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Unable to load axis_test module at {axis_module_path}")
+            axis_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(axis_module)
+            fetch_axis_snapshot = getattr(axis_module, "fetch_axis_snapshot")
             
             # Fetch and save to default location
+            img = fetch_axis_snapshot(str(image_path))
             img = fetch_axis_snapshot(str(image_path))
             if img is not None:
                 print(f"✓ Successfully fetched image from web camera")

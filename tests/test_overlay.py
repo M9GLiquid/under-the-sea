@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 """
-Test script for GPSOverlay API
+Test script for GPSOverlay API (now outside api/).
 
-This script demonstrates how to use the overlay API and tests basic functionality.
+Run from repo root:
+    python -m tests.test_overlay
+or:
+    python tests/test_overlay.py
 """
+
+import os
+import sys
+from pathlib import Path
+
+# Ensure repo root on path so "overlay" resolves
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from overlay import GPSOverlay
 

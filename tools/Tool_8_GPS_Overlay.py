@@ -197,21 +197,31 @@ def main() -> int:
         
         print(f"[API] API code verified: {os.path.relpath(api_py_path, project_root)}")
         
-        # Copy test file
-        test_file_path = os.path.join(api_dir, "test_overlay.py")
+        # Copy test file (now in tests/ outside api/)
+        tests_dir = os.path.join(project_root, "tests")
+        os.makedirs(tests_dir, exist_ok=True)
+        test_file_path = os.path.join(tests_dir, "test_overlay.py")
         test_content = """#!/usr/bin/env python3
 \"\"\"
-Test script for GPSOverlay API
-
-This script demonstrates how to use the overlay API and tests basic functionality.
+Test script for GPSOverlay API (outside api/).
+Run from repo root:
+    python -m tests.test_overlay
+or:
+    python tests/test_overlay.py
 \"\"\"
+
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from overlay import GPSOverlay
 
 
 def main():
     try:
-        # Load the API
         overlay = GPSOverlay()
 
         print("GPSOverlay API - Standalone Test")
@@ -265,7 +275,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+        main()
 """
         with open(test_file_path, 'w', encoding='utf-8') as f:
             f.write(test_content)
@@ -421,7 +431,7 @@ For issues or questions, refer to the main project README or calibration tools.
         print(f"  - api/overlay.py")
         print(f"  - api/gps_overlay.json")
         print(f"  - api/README.md")
-        print(f"  - api/test_overlay.py (optional test script)")
+        print(f"Optional test script written to tests/test_overlay.py")
         print("\nThen use:")
         print("  from overlay import GPSOverlay")
         print("  overlay = GPSOverlay()")

@@ -1,6 +1,6 @@
 {
   "source_grids_json": "data/GPS-Real_corrected_rectified_oriented_grid.json",
-  "rectified_image": "output/GPS-Real_corrected_rectified_oriented.png",
+  "rectified_image": "/home/thomas/Dev/Python/Mermaid/output/GPS-Real_corrected_rectified_oriented.png",
   "arena_bounds": {
     "left": 241,
     "top": 448,
@@ -103,7 +103,7 @@
     "mean": 6.203379686899571,
     "stddev": 0.0068498386935150115
   },
-  "recorded_at_utc": "2025-11-14T14:28:22+00:00",
+  "recorded_at_utc": "2025-11-24T13:00:07+00:00",
   "real_lengths_mm": {
     "top": 3628.0,
     "right": 2408.0,

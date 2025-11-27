@@ -71,6 +71,8 @@ if not os.path.exists(ros2_api_path):
 # Dynamic import of ros2-api (handles hyphen in filename)
 import importlib.util
 spec = importlib.util.spec_from_file_location("ros2_api", ros2_api_path)
+if spec is None or spec.loader is None:
+    raise ImportError(f"Could not load ros2_api module from {ros2_api_path}")
 ros2_api = importlib.util.module_from_spec(spec)
 sys.modules["ros2_api"] = ros2_api
 spec.loader.exec_module(ros2_api)
@@ -297,6 +299,8 @@ class ROS2CoordinateViewer:
                     try:
                         import importlib.util
                         spec = importlib.util.spec_from_file_location("axis_test", axis_test_path)
+                        if spec is None or spec.loader is None:
+                            raise ImportError(f"Could not load axis_test module from {axis_test_path}")
                         axis_test = importlib.util.module_from_spec(spec)
                         spec.loader.exec_module(axis_test)
                         camera_ip = camera_ip or getattr(axis_test, 'CAMERA_IP', None)
@@ -357,6 +361,8 @@ class ROS2CoordinateViewer:
                 try:
                     import importlib.util
                     spec = importlib.util.spec_from_file_location("axis_test", axis_test_path)
+                    if spec is None or spec.loader is None:
+                        raise ImportError(f"Could not load axis_test module from {axis_test_path}")
                     axis_test = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(axis_test)
                     camera_ip = camera_ip or getattr(axis_test, 'CAMERA_IP', None)
