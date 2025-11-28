@@ -3,13 +3,14 @@
 Standalone test script for GPSOverlay API
 
 This script can be run independently to test the GPSOverlay API functionality.
-Copy this script along with gps_overlay.py and gps_overlay.json to test the API.
+Copy this script along with modules/overlay-api.py and data/gps_overlay.json to test the API.
 """
 
 import json
 import math
 import os
 import sys
+from pathlib import Path
 
 
 def test_gps_overlay_api():
@@ -17,13 +18,13 @@ def test_gps_overlay_api():
     print("GPSOverlay API - Standalone Test")
     print("=" * 50)
 
-    # Add current directory to path to find gps_overlay module
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    parent_dir = os.path.dirname(current_dir)
-    sys.path.insert(0, os.path.join(parent_dir, 'src', 'tools'))
+    # Add repo root to path so modules/ resolves
+    repo_root = Path(__file__).resolve().parents[1]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
 
     try:
-        from gps_overlay import GPSOverlay
+        from modules import GPSOverlay
 
         # Test 1: API Loading
         print("\n[1] Testing API Loading...")
@@ -111,15 +112,15 @@ def test_gps_overlay_api():
 
         print("\n[SUCCESS] All tests completed!")
         print("\nAPI is ready for production use:")
-        print("- Copy gps_overlay.py and gps_overlay.json to your project")
-        print("- Import: from gps_overlay import GPSOverlay")
+        print("- Copy modules/overlay-api.py and data/gps_overlay.json to your project")
+        print("- Import via modules package or importlib: GPSOverlay class available")
         print("- Use simple functions: map_coords(), get_grid_cell(), get_real_coords()")
 
         return True
 
     except ImportError as e:
         print(f"\n[ERROR] Could not import GPSOverlay: {e}")
-        print("Make sure gps_overlay.py is in the same directory or in Python path")
+        print("Make sure modules/overlay-api.py is reachable and importable")
         return False
 
     except Exception as e:

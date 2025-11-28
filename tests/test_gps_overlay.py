@@ -12,11 +12,14 @@ import sys
 import tempfile
 import unittest
 from typing import Dict, List, Tuple
+from pathlib import Path
 
-# Add src/tools to path for testing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'tools'))
+# Add repo root so modules/ resolves
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from gps_overlay import GPSOverlay
+from modules import GPSOverlay
 
 
 class TestGPSOverlay(unittest.TestCase):

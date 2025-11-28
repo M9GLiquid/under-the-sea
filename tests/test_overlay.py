@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for GPSOverlay API (now outside api/).
+Test script for GPSOverlay API (modules/overlay-api.py + data/gps_overlay.json).
 
 Run from repo root:
     python -m tests.test_overlay
@@ -12,12 +12,12 @@ import os
 import sys
 from pathlib import Path
 
-# Ensure repo root on path so "overlay" resolves
+# Ensure repo root on path so modules/ resolves
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from overlay import GPSOverlay
+from modules import GPSOverlay
 
 
 def main():
@@ -65,7 +65,7 @@ def main():
             print("  Real-World: Not calibrated")
 
         print("\n[SUCCESS] GPSOverlay API ready for use!")
-        print("Copy overlay.py and gps_overlay.json to your project.")
+        print("Copy modules/overlay-api.py and data/gps_overlay.json to your project.")
 
     except FileNotFoundError:
         print("[ERROR] gps_overlay.json not found!")

@@ -474,15 +474,14 @@ Examples:
         check_file_exists(paths["calibration_json"], "Real-world calibration")
     check_file_exists(paths["gps_overlay_json"], "GPS Overlay JSON (final output)")
     
-    # Check if api/ folder was created
-    api_dir = project_root / "api"
-    if api_dir.exists():
-        api_files = list(api_dir.glob("*"))
-        if api_files:
-            print(f"\n📦 API Package:")
-            print(f"  Location: api/")
-            print(f"  Files: {len(api_files)} file(s) ready for export")
-            print(f"  Copy the 'api/' folder to your project to use the GPSOverlay API")
+    # Export guidance
+    modules_dir = project_root / "modules"
+    overlay_api_path = modules_dir / "overlay-api.py"
+    if overlay_api_path.exists() and paths["gps_overlay_json"].exists():
+        print(f"\n📦 API Package:")
+        print(f"  Copy these to consume the GPSOverlay API:")
+        print(f"    - modules/overlay-api.py")
+        print(f"    - data/{paths['gps_overlay_json'].name}")
     
     print(f"\n🎉 All done! Final output: {paths['gps_overlay_json'].name}")
     return 0

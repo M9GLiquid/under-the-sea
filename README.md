@@ -6,6 +6,8 @@ A comprehensive Python toolkit for processing fisheye images of underwater arena
 
 ```
 ├── main.py                 # Unified pipeline - run all tools sequentially
+├── modules/                # API entrypoints (vendored via subtree)
+│   └── overlay-api.py      # GPSOverlay API (warning header; do not edit here)
 ├── tools/                  # Processing tools (Tool 1-8)
 │   ├── Tool_1_Fix_Fisheye.py
 │   ├── Tool_2_Detect_Arena_Corners.py
@@ -16,16 +18,12 @@ A comprehensive Python toolkit for processing fisheye images of underwater arena
 │   ├── Tool_7_Point_Mapper.py
 │   ├── Tool_8_GPS_Overlay.py
 │   └── axis_test.py        # Axis camera snapshot tool
-├── src/                    # Programmatic APIs and shared utilities
-│   └── tools/
-│       ├── gps_api.py      # GPSMapper API
-│       └── gps_overlay.py  # Standalone GPSOverlay API
 ├── data/                   # JSON data files (calibrations, transforms, grids)
 ├── output/                 # Processed images
 ├── images/                 # Input images (GPS-Real.png)
 ├── tests/                  # Test files and validation scripts
 ├── requirements.txt        # Python dependencies
-└── README.md              # This file
+└── README.md               # This file
 ```
 
 ## Installation
@@ -433,16 +431,16 @@ For production use, Tool 8 creates a standalone API package that can be exported
 
 ### Export and Usage
 **Files to Export:**
-- `src/tools/gps_overlay.py` - Standalone API code
+- `modules/overlay-api.py` - Standalone GPSOverlay API (copy with data/gps_overlay.json)
 - `data/gps_overlay.json` - Calibration data (created by Tool 8)
 
 **Integration:**
 ```python
-# In your application code
-from gps_overlay import GPSOverlay
+# In your application code (modules folder on PYTHONPATH)
+from modules import GPSOverlay
 
-# Initialize API
-overlay = GPSOverlay("gps_overlay.json")
+# Initialize API (defaults to data/gps_overlay.json next to modules/)
+overlay = GPSOverlay()
 
 # Transform GPS server coordinates
 x_rect, y_rect = overlay.map_coords(50, 50)  # GPS → rectified

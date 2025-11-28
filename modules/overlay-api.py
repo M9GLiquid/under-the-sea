@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# WARNING: Do NOT modify this copy. Edit the source module and re-fetch via subtree.
 """
 GPSOverlay - Standalone coordinate transformation API
 
@@ -13,7 +14,7 @@ Also provides image transformation:
 This is a standalone API that can be exported and used independently.
 
 Usage:
-    from overlay import GPSOverlay
+    from modules import GPSOverlay
     overlay = GPSOverlay("gps_overlay.json")
 
     # Transform GPS coordinates
@@ -29,8 +30,8 @@ Usage:
 
 import json
 import math
-import os
-from typing import Dict, List, Tuple, Optional
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Union
 
 import numpy as np
 
@@ -43,13 +44,13 @@ class GPSOverlay:
     simple functions to transform GPS server coordinates.
     """
 
-    def __init__(self, json_path: Optional[str] = None):
+    def __init__(self, json_path: Optional[Union[str, Path]] = None):
         """
         Initialize the GPSOverlay API by loading calibration data.
         
         Args:
             json_path: Path to gps_overlay.json file. If None, looks for 
-                      gps_overlay.json in the same directory as this script.
+                      gps_overlay.json in the module's data/ folder.
         
         Example:
             # Load from default location (same directory)
@@ -58,14 +59,15 @@ class GPSOverlay:
             # Load from custom path
             overlay = GPSOverlay("path/to/gps_overlay.json")
         """
+        base_dir = Path(__file__).resolve().parent.parent
         if json_path is None:
-            # Auto-detect: look for gps_overlay.json in the same directory as this script
-            # This makes it easy to copy both files together
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            json_path = os.path.join(script_dir, "gps_overlay.json")
+            # Auto-detect: look for gps_overlay.json in data/ next to this module
+            json_path = base_dir / "data" / "gps_overlay.json"
+        else:
+            json_path = Path(json_path)
 
         # Load the calibration JSON file
-        with open(json_path, 'r', encoding='utf-8') as f:
+        with json_path.open('r', encoding='utf-8') as f:
             self.data = json.load(f)["gps_overlay"]
 
         # Image sizes:
@@ -573,7 +575,7 @@ class GPSOverlay:
         
         Example:
             import cv2
-            from overlay import GPSOverlay
+            from modules import GPSOverlay
             
             overlay = GPSOverlay()
             
